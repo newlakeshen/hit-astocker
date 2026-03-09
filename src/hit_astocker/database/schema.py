@@ -239,6 +239,57 @@ TABLES = {
             PRIMARY KEY (trade_date, ts_code)
         )
     """,
+    "ths_hot": """
+        CREATE TABLE IF NOT EXISTS ths_hot (
+            trade_date TEXT NOT NULL,
+            ts_code TEXT NOT NULL,
+            ts_name TEXT,
+            rank INTEGER,
+            pct_change REAL,
+            concept TEXT,
+            hot INTEGER,
+            market TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (trade_date, ts_code, market)
+        )
+    """,
+    "hsgt_top10": """
+        CREATE TABLE IF NOT EXISTS hsgt_top10 (
+            trade_date TEXT NOT NULL,
+            ts_code TEXT NOT NULL,
+            name TEXT,
+            "close" REAL,
+            "change" REAL,
+            rank INTEGER,
+            market_type TEXT,
+            amount REAL,
+            net_amount REAL,
+            buy REAL,
+            sell REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (trade_date, ts_code, market_type)
+        )
+    """,
+    "stk_factor_pro": """
+        CREATE TABLE IF NOT EXISTS stk_factor_pro (
+            trade_date TEXT NOT NULL,
+            ts_code TEXT NOT NULL,
+            "close" REAL,
+            macd_dif REAL,
+            macd_dea REAL,
+            macd REAL,
+            kdj_k REAL,
+            kdj_d REAL,
+            kdj_j REAL,
+            rsi_6 REAL,
+            rsi_12 REAL,
+            boll_upper REAL,
+            boll_mid REAL,
+            boll_lower REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (trade_date, ts_code)
+        )
+    """,
     "sync_log": """
         CREATE TABLE IF NOT EXISTS sync_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -271,6 +322,12 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_prediction_date ON stock_prediction(trade_date)",
     "CREATE INDEX IF NOT EXISTS idx_index_daily_date ON index_daily(trade_date)",
     "CREATE INDEX IF NOT EXISTS idx_index_daily_code ON index_daily(ts_code)",
+    "CREATE INDEX IF NOT EXISTS idx_ths_hot_date ON ths_hot(trade_date)",
+    "CREATE INDEX IF NOT EXISTS idx_ths_hot_code ON ths_hot(ts_code)",
+    "CREATE INDEX IF NOT EXISTS idx_hsgt_top10_date ON hsgt_top10(trade_date)",
+    "CREATE INDEX IF NOT EXISTS idx_hsgt_top10_code ON hsgt_top10(ts_code)",
+    "CREATE INDEX IF NOT EXISTS idx_stk_factor_date ON stk_factor_pro(trade_date)",
+    "CREATE INDEX IF NOT EXISTS idx_stk_factor_code ON stk_factor_pro(ts_code)",
 ]
 
 

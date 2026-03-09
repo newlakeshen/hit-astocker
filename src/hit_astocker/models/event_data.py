@@ -141,15 +141,20 @@ class EventAnalysisResult:
 
 @dataclass(frozen=True)
 class StockSentimentScore:
-    """个股情绪评分."""
+    """个股情绪评分 (8因子增强版)."""
 
     ts_code: str
     name: str
-    # 子因子
+    # 原始5因子
     volume_ratio_score: float  # 量比得分 (0-100)
     seal_order_score: float  # 封单强度得分 (0-100)
     bid_activity_score: float  # 竞价活跃度得分 (0-100)
     theme_heat_score: float  # 所属题材热度得分 (0-100)
     event_catalyst_score: float  # 事件催化得分 (0-100)
-    composite_score: float  # 综合情绪得分 (0-100)
+    # 新增3因子
+    popularity_score: float = 50.0  # 同花顺热度排名得分 (0-100)
+    northbound_score: float = 50.0  # 北向资金信号得分 (0-100)
+    technical_form_score: float = 50.0  # 技术形态得分 (0-100)
+    # 综合
+    composite_score: float = 0.0  # 综合情绪得分 (0-100)
     factors: dict[str, float] = field(default_factory=dict)

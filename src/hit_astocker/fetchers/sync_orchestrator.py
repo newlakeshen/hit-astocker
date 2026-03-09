@@ -11,6 +11,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from hit_astocker.config.settings import Settings
 from hit_astocker.fetchers.daily_bar_fetcher import DailyBarFetcher
 from hit_astocker.fetchers.dragon_fetcher import DragonTigerFetcher, InstitutionalFetcher
+from hit_astocker.fetchers.hsgt_fetcher import HsgtTop10Fetcher
 from hit_astocker.fetchers.index_fetcher import IndexDailyFetcher
 from hit_astocker.fetchers.kpl_fetcher import KplFetcher
 from hit_astocker.fetchers.limit_fetcher import BrokenBoardFetcher, LimitDownFetcher, LimitUpFetcher
@@ -19,6 +20,7 @@ from hit_astocker.fetchers.moneyflow_fetcher import MoneyFlowFetcher
 from hit_astocker.fetchers.rate_limiter import RateLimiter
 from hit_astocker.fetchers.sector_fetcher import SectorFetcher
 from hit_astocker.fetchers.step_fetcher import StepFetcher
+from hit_astocker.fetchers.ths_hot_fetcher import ThsHotFetcher
 from hit_astocker.fetchers.tushare_client import TushareClient
 from hit_astocker.repositories.base import BaseRepository
 from hit_astocker.utils.date_utils import to_tushare_date
@@ -39,6 +41,8 @@ API_REGISTRY: list[tuple[str, str, type, dict[str, Any]]] = [
     ("moneyflow_detail", "moneyflow_detail", MoneyFlowDetailFetcher, {}),
     ("daily_bar", "daily_bar", DailyBarFetcher, {}),
     ("index_daily", "index_daily", IndexDailyFetcher, {}),
+    ("ths_hot", "ths_hot", ThsHotFetcher, {}),
+    ("hsgt_top10", "hsgt_top10", HsgtTop10Fetcher, {}),
 ]
 
 

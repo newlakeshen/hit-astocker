@@ -4,7 +4,7 @@ import sqlite3
 
 from hit_astocker.database.schema import init_schema
 
-CURRENT_VERSION = 3
+CURRENT_VERSION = 4
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:

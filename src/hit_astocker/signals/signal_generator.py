@@ -1,12 +1,14 @@
-"""Signal generation engine.
+"""Signal generation engine (enhanced with survival rate, northbound, technical form).
 
 Produces actionable trading signals by combining composite scores and risk assessment.
-Now integrates event-driven classification and per-stock sentiment analysis.
+Integrates: event classification, 8-factor stock sentiment, board survival stats,
+northbound capital, and technical form analysis.
 """
 
 import sqlite3
 from datetime import date
 
+from hit_astocker.analyzers.board_survival import BoardSurvivalAnalyzer
 from hit_astocker.analyzers.dragon_tiger import DragonTigerAnalyzer
 from hit_astocker.analyzers.event_classifier import EventClassifier
 from hit_astocker.analyzers.firstboard import FirstBoardAnalyzer
@@ -17,6 +19,7 @@ from hit_astocker.analyzers.sentiment import SentimentAnalyzer
 from hit_astocker.analyzers.stock_sentiment import StockSentimentAnalyzer
 from hit_astocker.config.settings import Settings, get_settings
 from hit_astocker.models.signal import RiskLevel, SignalType, TradingSignal
+from hit_astocker.repositories.hsgt_repo import HsgtTop10Repository
 from hit_astocker.signals.composite_scorer import CompositeScorer
 from hit_astocker.signals.risk_assessor import RiskAssessor
 from hit_astocker.utils.stock_filter import should_exclude
@@ -34,6 +37,8 @@ class SignalGenerator:
         self._moneyflow_analyzer = MoneyFlowAnalyzer(conn)
         self._event_classifier = EventClassifier(conn)
         self._stock_sentiment_analyzer = StockSentimentAnalyzer(conn)
+        self._board_survival_analyzer = BoardSurvivalAnalyzer(conn)
+        self._hsgt_repo = HsgtTop10Repository(conn)
         self._scorer = CompositeScorer(self._settings)
         self._risk_assessor = RiskAssessor()
 
@@ -52,20 +57,27 @@ class SignalGenerator:
         # Event-driven analysis
         event_result = self._event_classifier.analyze(trade_date)
 
-        # Per-stock sentiment analysis
+        # Per-stock sentiment analysis (8-factor enhanced)
         stock_sentiments = self._stock_sentiment_analyzer.analyze(trade_date, candidate_codes)
 
-        # Score candidates (now with event + sentiment factors)
+        # Board survival model (uses historical data)
+        survival_model = self._board_survival_analyzer.compute_model(trade_date)
+
+        # Northbound capital net buyers
+        hsgt_net_map = self._hsgt_repo.find_net_buyers_by_date(trade_date)
+
+        # Score candidates (10-factor composite)
         scored = self._scorer.score(
             sentiment, firstboard_results, lianban, sector, dragon, moneyflow,
             event_result=event_result,
             stock_sentiments=stock_sentiments,
+            survival_model=survival_model,
+            hsgt_net_map=hsgt_net_map,
         )
 
         # Generate signals with risk assessment
         signals = []
         for candidate in scored:
-            # Filter excluded stocks
             if should_exclude(candidate.ts_code, candidate.name):
                 continue
 
@@ -103,6 +115,14 @@ class SignalGenerator:
             parts.append("龙虎榜资金关注")
         if candidate.factors.get("capital_flow", 0) >= 70:
             parts.append("主力资金净流入")
+
+        # Northbound reason
+        if candidate.factors.get("northbound", 0) >= 70:
+            parts.append("北向资金买入")
+
+        # Technical form reason
+        if candidate.factors.get("technical_form", 0) >= 75:
+            parts.append("技术形态良好")
 
         # Event-driven reason
         if event_result:

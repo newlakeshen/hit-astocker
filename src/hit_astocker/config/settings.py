@@ -33,13 +33,20 @@ class Settings(BaseSettings):
     first_board_turnover_weight: float = 0.15
     first_board_sector_weight: float = 0.20
 
-    # Composite scoring weights
-    composite_sentiment_weight: float = 0.25
-    composite_seal_quality_weight: float = 0.20
-    composite_sector_weight: float = 0.20
-    composite_lianban_weight: float = 0.15
-    composite_capital_flow_weight: float = 0.10
-    composite_dragon_tiger_weight: float = 0.10
+    # Composite scoring weights (10-factor)
+    composite_sentiment_weight: float = 0.17
+    composite_seal_quality_weight: float = 0.16
+    composite_sector_weight: float = 0.12
+    composite_lianban_survival_weight: float = 0.08
+    composite_capital_flow_weight: float = 0.07
+    composite_dragon_tiger_weight: float = 0.07
+    composite_event_catalyst_weight: float = 0.10
+    composite_stock_sentiment_weight: float = 0.10
+    composite_northbound_weight: float = 0.07
+    composite_technical_form_weight: float = 0.06
+
+    # Board survival analysis
+    survival_lookback_years: int = 10
 
     # API rate limiting
     api_calls_per_minute: int = 200
