@@ -1,0 +1,41 @@
+[project]
+name = "hit-astocker"
+version = "0.1.0"
+description = "A-Stock limit-up board hitting quantitative trading analysis system"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "tushare>=1.4.0",
+    "typer[all]>=0.12.0",
+    "rich>=13.0",
+    "pydantic-settings>=2.0",
+    "pandas>=2.0",
+]
+
+[project.scripts]
+hit-astocker = "hit_astocker.main:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.5.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=hit_astocker --cov-report=term-missing"
