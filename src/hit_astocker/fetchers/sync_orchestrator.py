@@ -46,6 +46,7 @@ API_REGISTRY: list[tuple[str, str, type, dict[str, Any]]] = [
     ("daily_bar", "daily_bar", DailyBarFetcher, {}),
     ("index_daily", "index_daily", IndexDailyFetcher, {}),
     ("ths_hot", "ths_hot", ThsHotFetcher, {}),
+    ("ths_hot_概念", "ths_hot", ThsHotFetcher, {"market": "概念"}),
     ("hsgt_top10", "hsgt_top10", HsgtTop10Fetcher, {}),
     ("stk_auction", "stk_auction", StockAuctionFetcher, {}),
     ("anns_d", "anns_d", AnnouncementFetcher, {}),
@@ -224,19 +225,23 @@ class SyncOrchestrator:
     def _sync_ths_members(self, date_str: str) -> int:
         """Fetch ths_member for active concept codes from ths_hot data.
 
-        Determines relevant THS concept codes from today's ths_hot records,
-        then fetches member lists for any concepts not yet cached.
+        Uses ths_hot rows with market='概念' to get concept index codes
+        (e.g. 885600.TI), NOT stock codes from market='热股'.
+        Then fetches member lists for any concepts not yet cached.
         """
         from hit_astocker.fetchers.ths_member_fetcher import ThsMemberFetcher
 
-        # Get distinct concept codes from ths_hot (already synced)
+        # Get concept index codes from ths_hot (market='概念' rows only)
+        # These are real concept codes like 885XXX.TI, not stock codes
         hot_rows = self._conn.execute(
-            "SELECT DISTINCT ts_code FROM ths_hot WHERE trade_date = ?",
+            "SELECT DISTINCT ts_code FROM ths_hot "
+            "WHERE trade_date = ? AND market = '概念'",
             (date_str,),
         ).fetchall()
         concept_codes = [r["ts_code"] for r in hot_rows]
         if not concept_codes:
-            self._log_sync("ths_member", date_str, 0, "empty")
+            self._log_sync("ths_member", date_str, 0, "empty",
+                           "no concept rows in ths_hot (sync ths_hot_概念 first)")
             return 0
 
         # Filter out already-cached concepts

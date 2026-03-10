@@ -12,11 +12,15 @@ FIELDS = (
 
 
 class ThsHotFetcher(FetcherBase):
+    def __init__(self, client, *, market: str = "热股"):
+        super().__init__(client)
+        self._market = market
+
     def _call_api(self, date_str: str) -> pd.DataFrame:
         return self._client.query(
             "ths_hot",
             trade_date=date_str,
-            market="热股",
+            market=self._market,
             fields=FIELDS,
         )
 

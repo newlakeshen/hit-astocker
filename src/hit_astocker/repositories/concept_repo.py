@@ -93,6 +93,31 @@ class ThsMemberRepository(BaseRepository):
             result[r["ts_code"]].append(r["code"])
         return dict(result)
 
+    def get_members_by_concept_name(self, concept_name: str) -> list[str]:
+        """Get member stock codes by concept NAME (not index code).
+
+        Looks up the concept index code from ths_hot (market='概念')
+        where ts_name matches the concept name, then returns members.
+        """
+        # concept name → concept index code via ths_hot
+        row = self._conn.execute(
+            "SELECT ts_code FROM ths_hot "
+            "WHERE ts_name = ? AND market = '概念' "
+            "ORDER BY trade_date DESC LIMIT 1",
+            (concept_name,),
+        ).fetchone()
+        if not row:
+            return []
+
+        concept_code = row["ts_code"]
+        sql = """
+            SELECT code FROM ths_member
+            WHERE ts_code = ?
+              AND (out_date IS NULL OR out_date = '')
+        """
+        rows = self._conn.execute(sql, (concept_code,)).fetchall()
+        return [r["code"] for r in rows]
+
     def has_data(self) -> bool:
         row = self._conn.execute("SELECT COUNT(*) FROM ths_member").fetchone()
         return row[0] > 0 if row else False

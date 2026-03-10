@@ -307,19 +307,22 @@ class EventClassifier:
         """L3: Compute diffusion rate — ratio of concept members that are limit-up.
 
         Uses concept_detail membership as primary source; falls back to
-        ths_member if available.
+        ths_member (via concept name → concept index code → member stocks).
         """
         if not concepts:
             return 0.0
 
-        # Try concept_detail first
         primary_concept = concepts[0]
+
+        # Try concept_detail first (Tushare own concept data)
         members = self._concept_repo.get_concept_members(primary_concept)
 
+        # Fallback: ths_member (同花顺概念成分, keyed by concept index code)
+        # Looks up concept name → concept index code via ths_hot, then members
         if not members and self._ths_member_repo.has_data():
-            # Fallback: check ths_member
-            # (ths_member uses concept index codes, not names — skip if mismatch)
-            pass
+            members = self._ths_member_repo.get_members_by_concept_name(
+                primary_concept,
+            )
 
         if not members:
             return 0.0
@@ -510,6 +513,9 @@ class EventClassifier:
         """
         # Try concept membership for sector size
         members = self._concept_repo.get_concept_members(theme)
+        # Fallback to ths_member if concept_detail has no data
+        if not members and self._ths_member_repo.has_data():
+            members = self._ths_member_repo.get_members_by_concept_name(theme)
         if not members or len(members) < 3:
             # No concept data or too small → no penalty
             return 0.0, 0.0
