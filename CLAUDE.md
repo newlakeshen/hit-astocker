@@ -47,7 +47,8 @@ Concurrency model:
   - `event_classifier.py` - Event-driven classification (涨停原因分类 + 题材热度)
   - `stock_sentiment.py` - Per-stock sentiment scoring (8因子: 量比/封单/竞价/题材/催化/人气/北向/技术)
   - `market_context.py` - Market index regime analysis (MA5/MA20 + regime scoring)
-  - `signal_validator.py` - T+1 signal validation and hit rate tracking
+  - `signal_validator.py` - T+1 signal validation (legacy, simple close-vs-OHLC)
+  - `backtest_engine.py` - Realistic board-hitting backtest (3 execution modes + stop/target)
   - `predictor.py` - Buy/sell prediction engine
   - `board_survival.py` - 连板生存率统计 (10-year historical P(N+1|N))
   - `technical_form.py` - 技术形态评分 (MACD/KDJ/RSI/BOLL)
@@ -60,7 +61,7 @@ Concurrency model:
 - `repositories/` - SQLite data access layer (13 repositories)
   - Includes: `ths_hot_repo.py`, `hsgt_repo.py`, `stk_factor_repo.py`
 - `models/` - Frozen dataclass models
-  - Includes: `ths_hot_data.py`, `hsgt_data.py`, `stk_factor_data.py`
+  - Includes: `ths_hot_data.py`, `hsgt_data.py`, `stk_factor_data.py`, `backtest.py` (TradeResult/BacktestStats)
 - `commands/` - CLI command handlers (13 commands including `event` and `backtest --detail`)
 - `renderers/` - Rich terminal output (tables, dashboard, theme)
 
@@ -72,7 +73,9 @@ hit-astocker daily -d YYYYMMDD      # Full dashboard with market context + event
 hit-astocker sentiment -d YYYYMMDD  # Sentiment with 大盘联动 display
 hit-astocker event -d YYYYMMDD      # Event classification + theme heat + stock sentiment
 hit-astocker signal -d YYYYMMDD     # Trading signals (10-factor scoring)
-hit-astocker backtest -s START -e END [--detail]  # Backtest with T+1 validation
+hit-astocker backtest -s START -e END [-m MODE] [--stop-loss -7] [--take-profit 5] [--detail]
+  # MODE: AUCTION (竞价买) / WEAK_TO_STRONG (弱转强) / RE_SEAL (回封买)
+  # T信号 → T+1买入 → T+2卖出, 处理一字板/炸板止损/冲高兑现
 hit-astocker firstboard / lianban / sector / dragon / flow / predict
 ```
 
