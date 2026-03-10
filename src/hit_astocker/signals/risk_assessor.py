@@ -29,8 +29,20 @@ class RiskAssessor:
         # High risk conditions
         if sentiment.overall_score < thresholds["high_sentiment"]:
             return RiskLevel.HIGH
-        if candidate.factors.get("seal_quality", 0) < 40:
-            return RiskLevel.HIGH
+
+        # Signal-type-specific quality check
+        sig_type = candidate.signal_type
+        if sig_type == "FIRST_BOARD":
+            if candidate.factors.get("seal_quality", 0) < 40:
+                return RiskLevel.HIGH
+        elif sig_type == "FOLLOW_BOARD":
+            if candidate.factors.get("survival", 0) < 30:
+                return RiskLevel.HIGH
+            if candidate.factors.get("height_momentum", 0) < 35:
+                return RiskLevel.HIGH
+        elif sig_type == "SECTOR_LEADER":
+            if candidate.factors.get("theme_heat", 0) < 40:
+                return RiskLevel.HIGH
 
         # Index-based high risk: 大盘下跌 + 弱势MA
         if ctx and ctx.sh_pct_chg < -1.0 and ctx.sh_ma20_ratio < 0.99:

@@ -129,8 +129,8 @@ _SIGNAL_TYPE_LABELS = {
 
 
 def signal_table(signals) -> Table:
-    """Build trading signal table (enhanced with new factors)."""
-    table = Table(title="打板信号 (10因子)", show_header=True, header_style="bold cyan")
+    """Build trading signal table — shows type-specific key factor."""
+    table = Table(title="打板信号 (三模型)", show_header=True, header_style="bold cyan")
     table.add_column("#", justify="right", width=3)
     table.add_column("类型", width=4)
     table.add_column("代码", width=10)
@@ -138,16 +138,28 @@ def signal_table(signals) -> Table:
     table.add_column("评分", justify="right", width=6)
     table.add_column("风险", width=6)
     table.add_column("仓位", width=5)
-    table.add_column("北向", justify="right", width=4)
+    table.add_column("核心", justify="right", width=5)
     table.add_column("人气", justify="right", width=4)
-    table.add_column("技术", justify="right", width=4)
+    table.add_column("北向", justify="right", width=4)
     table.add_column("理由", width=28)
 
     for i, sig in enumerate(signals[:15], 1):
-        nb = sig.factors.get("northbound", 0)
-        pop = sig.factors.get("stock_sentiment", 0)
-        tech = sig.factors.get("technical_form", 0)
-        type_label = _SIGNAL_TYPE_LABELS.get(sig.signal_type.value, sig.signal_type.value)
+        f = sig.factors
+        # Type-specific key factor display
+        sig_type = sig.signal_type.value
+        if sig_type == "FIRST_BOARD":
+            key_val = f.get("seal_quality", 0)
+            key_label = f"封{key_val:.0f}"
+        elif sig_type == "FOLLOW_BOARD":
+            key_val = f.get("survival", 0)
+            key_label = f"存{key_val:.0f}"
+        else:
+            key_val = f.get("theme_heat", 0)
+            key_label = f"热{key_val:.0f}"
+
+        nb = f.get("northbound", 0)
+        pop = f.get("stock_sentiment", 0)
+        type_label = _SIGNAL_TYPE_LABELS.get(sig_type, sig_type)
         table.add_row(
             str(i),
             type_label,
@@ -156,9 +168,9 @@ def signal_table(signals) -> Table:
             f"[{score_color(sig.composite_score)}]{sig.composite_score:.1f}[/]",
             f"[{risk_color(sig.risk_level.value)}]{sig.risk_level.value}[/]",
             sig.position_hint,
-            f"[{score_color(nb)}]{nb:.0f}[/]",
+            f"[{score_color(key_val)}]{key_label}[/]",
             f"[{score_color(pop)}]{pop:.0f}[/]",
-            f"[{score_color(tech)}]{tech:.0f}[/]",
+            f"[{score_color(nb)}]{nb:.0f}[/]",
             sig.reason[:28],
         )
     return table

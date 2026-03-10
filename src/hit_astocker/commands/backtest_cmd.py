@@ -68,6 +68,10 @@ def backtest(
         # Render summary
         _render_summary(stats, start, end)
 
+        # Per signal-type breakdown (三套独立口径)
+        if stats.by_type:
+            _render_type_breakdown(stats)
+
         # Risk breakdown
         if stats.by_risk:
             _render_risk_breakdown(stats)
@@ -125,6 +129,42 @@ def _render_summary(stats: ValidationStats, start: str, end: str) -> None:
     console.print(table)
 
 
+_TYPE_LABELS = {
+    "FIRST_BOARD": "首板",
+    "FOLLOW_BOARD": "接力",
+    "SECTOR_LEADER": "龙头",
+}
+
+
+def _render_type_breakdown(stats: ValidationStats) -> None:
+    table = Table(title="信号类型胜率对比 (独立口径)", header_style="bold cyan")
+    table.add_column("类型", width=8)
+    table.add_column("信号数", justify="right", width=6)
+    table.add_column("盈利", justify="right", width=5)
+    table.add_column("胜率", justify="right", width=8)
+    table.add_column("平均收益", justify="right", width=10)
+    table.add_column("平均最高", justify="right", width=10)
+    table.add_column("连板数", justify="right", width=6)
+
+    for sig_type in ("FIRST_BOARD", "FOLLOW_BOARD", "SECTOR_LEADER"):
+        bucket = stats.by_type.get(sig_type)
+        if not bucket:
+            continue
+        hr_color = "bold red" if bucket.hit_rate >= 0.5 else "bold green"
+        label = _TYPE_LABELS.get(sig_type, sig_type)
+        table.add_row(
+            label,
+            str(bucket.count),
+            str(bucket.win_count),
+            f"[{hr_color}]{bucket.hit_rate:.1%}[/]",
+            f"[{pct_color(bucket.avg_return)}]{bucket.avg_return:+.2f}%[/]",
+            f"[{pct_color(bucket.avg_max_return)}]{bucket.avg_max_return:+.2f}%[/]",
+            str(bucket.limit_up_count),
+        )
+
+    console.print(table)
+
+
 def _render_risk_breakdown(stats: ValidationStats) -> None:
     table = Table(title="风险等级胜率分布", header_style="bold cyan")
     table.add_column("风险等级", width=10)
@@ -177,6 +217,7 @@ def _render_detail(validations: list[SignalValidation]) -> None:
     table = Table(title="信号验证明细 (Top 30)", header_style="bold cyan")
     table.add_column("#", justify="right", width=3)
     table.add_column("日期", width=10)
+    table.add_column("类型", width=4)
     table.add_column("代码", width=10)
     table.add_column("名称", width=8)
     table.add_column("评分", justify="right", width=6)
@@ -185,7 +226,6 @@ def _render_detail(validations: list[SignalValidation]) -> None:
     table.add_column("开盘%", justify="right", width=8)
     table.add_column("最高%", justify="right", width=8)
     table.add_column("收盘%", justify="right", width=8)
-    table.add_column("最低%", justify="right", width=8)
     table.add_column("结果", width=4)
 
     sorted_v = sorted(validations, key=lambda v: v.next_close_pct, reverse=True)
@@ -193,9 +233,11 @@ def _render_detail(validations: list[SignalValidation]) -> None:
         result = "[bold red]盈[/]" if v.is_win else "[bold green]亏[/]"
         if v.is_limit_up:
             result = "[bold red]连板[/]"
+        type_label = _TYPE_LABELS.get(v.signal_type, v.signal_type[:4])
         table.add_row(
             str(i),
             str(v.trade_date),
+            type_label,
             v.ts_code,
             v.name,
             f"[{score_color(v.signal_score)}]{v.signal_score:.0f}[/]",
@@ -204,7 +246,6 @@ def _render_detail(validations: list[SignalValidation]) -> None:
             f"[{pct_color(v.next_open_pct)}]{v.next_open_pct:+.2f}%[/]",
             f"[{pct_color(v.next_high_pct)}]{v.next_high_pct:+.2f}%[/]",
             f"[{pct_color(v.next_close_pct)}]{v.next_close_pct:+.2f}%[/]",
-            f"[{pct_color(v.next_low_pct)}]{v.next_low_pct:+.2f}%[/]",
             result,
         )
 

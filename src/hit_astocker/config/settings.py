@@ -36,17 +36,44 @@ class Settings(BaseSettings):
     first_board_turnover_weight: float = 0.15
     first_board_sector_weight: float = 0.20
 
-    # Composite scoring weights (10-factor, sum=1)
-    composite_sentiment_weight: float = 0.17
-    composite_seal_quality_weight: float = 0.16
-    composite_sector_weight: float = 0.12
-    composite_lianban_survival_weight: float = 0.08
-    composite_capital_flow_weight: float = 0.07
-    composite_dragon_tiger_weight: float = 0.07
-    composite_event_catalyst_weight: float = 0.10
-    composite_stock_sentiment_weight: float = 0.10
-    composite_northbound_weight: float = 0.07
-    composite_technical_form_weight: float = 0.06
+    # ── FIRST_BOARD 首板弱转强/回封 (10-factor, sum=1) ──
+    # 核心: 封板质量决定首板打板成功率
+    fb_sentiment_weight: float = 0.12
+    fb_seal_quality_weight: float = 0.22
+    fb_sector_weight: float = 0.12
+    fb_survival_weight: float = 0.06
+    fb_capital_flow_weight: float = 0.08
+    fb_dragon_tiger_weight: float = 0.05
+    fb_event_catalyst_weight: float = 0.10
+    fb_stock_sentiment_weight: float = 0.08
+    fb_northbound_weight: float = 0.05
+    fb_technical_form_weight: float = 0.12
+
+    # ── FOLLOW_BOARD 2-3板接力 (10-factor, sum=1) ──
+    # 核心: 连板生存率 + 高度动能决定接力成功率
+    fl_sentiment_weight: float = 0.10
+    fl_survival_weight: float = 0.22
+    fl_height_momentum_weight: float = 0.15
+    fl_sector_weight: float = 0.10
+    fl_capital_flow_weight: float = 0.05
+    fl_dragon_tiger_weight: float = 0.08
+    fl_event_catalyst_weight: float = 0.05
+    fl_stock_sentiment_weight: float = 0.12
+    fl_northbound_weight: float = 0.05
+    fl_technical_form_weight: float = 0.08
+
+    # ── SECTOR_LEADER 空间板龙头 (10-factor, sum=1) ──
+    # 核心: 板块热度 + 龙头地位决定空间板高度
+    sl_sentiment_weight: float = 0.10
+    sl_theme_heat_weight: float = 0.22
+    sl_leader_position_weight: float = 0.15
+    sl_sector_weight: float = 0.08
+    sl_capital_flow_weight: float = 0.08
+    sl_dragon_tiger_weight: float = 0.10
+    sl_event_catalyst_weight: float = 0.12
+    sl_stock_sentiment_weight: float = 0.07
+    sl_northbound_weight: float = 0.05
+    sl_technical_form_weight: float = 0.03
 
     # Board survival analysis
     survival_lookback_years: int = 10
@@ -74,17 +101,26 @@ class Settings(BaseSettings):
                 self.first_board_turnover_weight,
                 self.first_board_sector_weight,
             ],
-            "composite": [
-                self.composite_sentiment_weight,
-                self.composite_seal_quality_weight,
-                self.composite_sector_weight,
-                self.composite_lianban_survival_weight,
-                self.composite_capital_flow_weight,
-                self.composite_dragon_tiger_weight,
-                self.composite_event_catalyst_weight,
-                self.composite_stock_sentiment_weight,
-                self.composite_northbound_weight,
-                self.composite_technical_form_weight,
+            "fb (FIRST_BOARD)": [
+                self.fb_sentiment_weight, self.fb_seal_quality_weight,
+                self.fb_sector_weight, self.fb_survival_weight,
+                self.fb_capital_flow_weight, self.fb_dragon_tiger_weight,
+                self.fb_event_catalyst_weight, self.fb_stock_sentiment_weight,
+                self.fb_northbound_weight, self.fb_technical_form_weight,
+            ],
+            "fl (FOLLOW_BOARD)": [
+                self.fl_sentiment_weight, self.fl_survival_weight,
+                self.fl_height_momentum_weight, self.fl_sector_weight,
+                self.fl_capital_flow_weight, self.fl_dragon_tiger_weight,
+                self.fl_event_catalyst_weight, self.fl_stock_sentiment_weight,
+                self.fl_northbound_weight, self.fl_technical_form_weight,
+            ],
+            "sl (SECTOR_LEADER)": [
+                self.sl_sentiment_weight, self.sl_theme_heat_weight,
+                self.sl_leader_position_weight, self.sl_sector_weight,
+                self.sl_capital_flow_weight, self.sl_dragon_tiger_weight,
+                self.sl_event_catalyst_weight, self.sl_stock_sentiment_weight,
+                self.sl_northbound_weight, self.sl_technical_form_weight,
             ],
         }
         for name, weights in groups.items():

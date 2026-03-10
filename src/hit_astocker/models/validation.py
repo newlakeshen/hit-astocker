@@ -1,6 +1,6 @@
 """Signal validation model — tracks T+1 performance of trading signals."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 
@@ -12,6 +12,7 @@ class SignalValidation:
     next_date: date  # validation date (T+1)
     ts_code: str
     name: str
+    signal_type: str  # FIRST_BOARD / FOLLOW_BOARD / SECTOR_LEADER
     signal_score: float  # composite score on signal date
     risk_level: str
     position_hint: str
@@ -43,6 +44,7 @@ class ValidationStats:
     consecutive_losses: int  # max consecutive losing trades
     by_risk: dict[str, "RiskBucketStats"]
     by_score_bucket: dict[str, "ScoreBucketStats"]
+    by_type: dict[str, "TypeBucketStats"] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -65,3 +67,16 @@ class ScoreBucketStats:
     win_count: int
     hit_rate: float
     avg_return: float
+
+
+@dataclass(frozen=True)
+class TypeBucketStats:
+    """Stats broken down by signal type."""
+
+    signal_type: str  # FIRST_BOARD / FOLLOW_BOARD / SECTOR_LEADER
+    count: int
+    win_count: int
+    hit_rate: float
+    avg_return: float
+    avg_max_return: float  # mean next_high_pct
+    limit_up_count: int  # T+1 继续涨停数

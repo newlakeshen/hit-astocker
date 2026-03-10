@@ -77,32 +77,51 @@ class SignalGenerator:
     @staticmethod
     def _build_reason(candidate, sentiment, lianban, event_result=None) -> str:
         parts = []
+        f = candidate.factors
 
-        # Signal-type specific lead reason
-        if candidate.signal_type == "FOLLOW_BOARD":
-            survival = candidate.factors.get("lianban_survival", 0)
-            if survival >= 70:
-                parts.append("连板晋级概率高")
+        # ── Signal-type specific lead reason ──
+        if candidate.signal_type == "FIRST_BOARD":
+            sq = f.get("seal_quality", 0)
+            if sq >= 80:
+                parts.append("封板强度优秀")
+            elif sq >= 60:
+                parts.append("封板质量良好")
+        elif candidate.signal_type == "FOLLOW_BOARD":
+            hm = f.get("height_momentum", 0)
+            surv = f.get("survival", 0)
+            if hm >= 90:
+                parts.append("2板最佳接力位")
+            elif hm >= 75:
+                parts.append("3板趋势确认")
             else:
-                parts.append("连板跟进")
+                parts.append("高位接力")
+            if surv >= 70:
+                parts.append(f"晋级率{surv:.0f}%")
         elif candidate.signal_type == "SECTOR_LEADER":
-            parts.append("板块龙头领涨")
+            th = f.get("theme_heat", 0)
+            lp = f.get("leader_position", 0)
+            if lp >= 90:
+                parts.append("板块龙一辨识度高")
+            elif lp >= 70:
+                parts.append("板块龙二跟涨")
+            else:
+                parts.append("板块龙头")
+            if th >= 80:
+                parts.append(f"题材热度{th:.0f}")
 
-        # Common factor reasons
-        if candidate.factors.get("sentiment", 0) >= 65:
-            parts.append("市场情绪偏暖")
-        if candidate.factors.get("seal_quality", 0) >= 70:
-            parts.append("封板质量优秀")
-        if candidate.factors.get("sector", 0) >= 80:
-            parts.append("属于当日热点板块")
-        if candidate.factors.get("dragon_tiger", 0) >= 70:
-            parts.append("龙虎榜资金关注")
-        if candidate.factors.get("capital_flow", 0) >= 70:
-            parts.append("主力资金净流入")
-        if candidate.factors.get("northbound", 0) >= 70:
-            parts.append("北向资金买入")
-        if candidate.factors.get("technical_form", 0) >= 75:
-            parts.append("技术形态良好")
+        # ── Common factor reasons (shared) ──
+        if f.get("sentiment", 0) >= 65:
+            parts.append("情绪偏暖")
+        if f.get("sector", 0) >= 80:
+            parts.append("热点板块")
+        if f.get("dragon_tiger", 0) >= 70:
+            parts.append("龙虎榜关注")
+        if f.get("capital_flow", 0) >= 70:
+            parts.append("主力净流入")
+        if f.get("northbound", 0) >= 70:
+            parts.append("北向买入")
+        if f.get("technical_form", 0) >= 75:
+            parts.append("技术良好")
 
         if event_result:
             ev_map = {ev.ts_code: ev for ev in event_result.stock_events}
@@ -110,7 +129,7 @@ class SignalGenerator:
             if ev and ev.event_weight >= 0.75:
                 parts.append(f"事件催化({ev.event_type})")
 
-        if candidate.factors.get("stock_sentiment", 0) >= 70:
-            parts.append("个股情绪强势")
+        if f.get("stock_sentiment", 0) >= 70:
+            parts.append("个股情绪强")
 
         return "; ".join(parts) if parts else "综合评分达标"

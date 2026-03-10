@@ -12,6 +12,7 @@ from hit_astocker.models.validation import (
     RiskBucketStats,
     ScoreBucketStats,
     SignalValidation,
+    TypeBucketStats,
     ValidationStats,
 )
 from hit_astocker.repositories.daily_bar_repo import DailyBarRepository
@@ -57,6 +58,7 @@ class SignalValidator:
                 next_date=next_date,
                 ts_code=sig.ts_code,
                 name=sig.name,
+                signal_type=sig.signal_type.value,
                 signal_score=sig.composite_score,
                 risk_level=sig.risk_level.value,
                 position_hint=sig.position_hint,
@@ -103,6 +105,9 @@ class SignalValidator:
         # By score bucket
         by_score = _stats_by_score(validations)
 
+        # By signal type
+        by_type = _stats_by_type(validations)
+
         return ValidationStats(
             total_signals=total_signals,
             validated_count=validated,
@@ -118,6 +123,7 @@ class SignalValidator:
             consecutive_losses=max_consecutive,
             by_risk=by_risk,
             by_score_bucket=by_score,
+            by_type=by_type,
         )
 
 
@@ -152,6 +158,30 @@ def _stats_by_risk(validations: list[SignalValidation]) -> dict[str, RiskBucketS
             win_count=wins,
             hit_rate=wins / len(items),
             avg_return=round(avg_ret, 2),
+        )
+    return result
+
+
+def _stats_by_type(validations: list[SignalValidation]) -> dict[str, TypeBucketStats]:
+    """Compute stats grouped by signal type (FIRST_BOARD / FOLLOW_BOARD / SECTOR_LEADER)."""
+    buckets: dict[str, list[SignalValidation]] = {}
+    for v in validations:
+        buckets.setdefault(v.signal_type, []).append(v)
+
+    result = {}
+    for sig_type, items in sorted(buckets.items()):
+        wins = sum(1 for v in items if v.is_win)
+        avg_ret = sum(v.next_close_pct for v in items) / len(items)
+        avg_max = sum(v.next_high_pct for v in items) / len(items)
+        lu_count = sum(1 for v in items if v.is_limit_up)
+        result[sig_type] = TypeBucketStats(
+            signal_type=sig_type,
+            count=len(items),
+            win_count=wins,
+            hit_rate=wins / len(items),
+            avg_return=round(avg_ret, 2),
+            avg_max_return=round(avg_max, 2),
+            limit_up_count=lu_count,
         )
     return result
 
