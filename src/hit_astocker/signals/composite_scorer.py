@@ -1,8 +1,6 @@
-"""Composite scoring engine (enhanced with survival rate + northbound).
+"""Composite scoring engine (10-factor).
 
-Aggregates all analyzer outputs into a single score per candidate stock.
-10-factor scoring: sentiment, seal_quality, sector, lianban_survival, capital_flow,
-dragon_tiger, event_catalyst, stock_sentiment, northbound, technical_form.
+All weights are read from Settings — never hard-coded here.
 """
 
 from hit_astocker.analyzers.board_survival import SurvivalModel
@@ -66,17 +64,17 @@ class CompositeScorer:
 
         # Score first-board candidates
         for fb in firstboard_results:
-            factors = {
+            factors: dict[str, float] = {
                 "sentiment": sentiment.overall_score,
                 "seal_quality": fb.composite_score,
                 "sector": 100.0 if fb.industry in sector_names else 30.0,
             }
 
-            # Lianban survival factor (replaces crude lianban_position=50)
+            # Lianban survival factor
             if survival_model and survival_model.stats:
                 from hit_astocker.analyzers.board_survival import BoardSurvivalAnalyzer
                 factors["lianban_survival"] = BoardSurvivalAnalyzer(None).score_position(
-                    1, survival_model,  # height=1 for first board
+                    1, survival_model,
                 )
             else:
                 factors["lianban_survival"] = 50.0
@@ -114,8 +112,8 @@ class CompositeScorer:
                 stock_sent_score = ss.composite_score
             factors["stock_sentiment"] = stock_sent_score
 
-            # Northbound capital factor (北向资金)
-            nb_score = 45.0  # neutral default
+            # Northbound capital factor
+            nb_score = 45.0
             nb_net = northbound_map.get(fb.ts_code)
             if nb_net is not None:
                 if nb_net >= 10000:
@@ -128,23 +126,22 @@ class CompositeScorer:
                     nb_score = 25.0
             factors["northbound"] = nb_score
 
-            # Weighted composite (10 factors)
-            # 市场情绪 17% + 封板质量 16% + 板块 12% + 连板生存率 8%
-            # + 资金流向 7% + 龙虎榜 7% + 事件催化 10% + 个股情绪 10%
-            # + 北向资金 7% + 技术形态(在个股情绪中已含) 6%
-            composite = (
-                0.17 * factors["sentiment"]
-                + 0.16 * factors["seal_quality"]
-                + 0.12 * factors["sector"]
-                + 0.08 * factors["lianban_survival"]
-                + 0.07 * factors["capital_flow"]
-                + 0.07 * factors["dragon_tiger"]
-                + 0.10 * factors["event_catalyst"]
-                + 0.10 * factors["stock_sentiment"]
-                + 0.07 * factors["northbound"]
-                + 0.06 * (ss.technical_form_score if ss else 50.0)
-            )
+            # Technical form factor
             factors["technical_form"] = ss.technical_form_score if ss else 50.0
+
+            # Weighted composite — all weights from Settings
+            composite = (
+                s.composite_sentiment_weight * factors["sentiment"]
+                + s.composite_seal_quality_weight * factors["seal_quality"]
+                + s.composite_sector_weight * factors["sector"]
+                + s.composite_lianban_survival_weight * factors["lianban_survival"]
+                + s.composite_capital_flow_weight * factors["capital_flow"]
+                + s.composite_dragon_tiger_weight * factors["dragon_tiger"]
+                + s.composite_event_catalyst_weight * factors["event_catalyst"]
+                + s.composite_stock_sentiment_weight * factors["stock_sentiment"]
+                + s.composite_northbound_weight * factors["northbound"]
+                + s.composite_technical_form_weight * factors["technical_form"]
+            )
 
             candidates.append(ScoredCandidate(
                 ts_code=fb.ts_code,
