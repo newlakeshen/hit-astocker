@@ -13,6 +13,7 @@ from hit_astocker.fetchers.ann_fetcher import AnnouncementFetcher
 from hit_astocker.fetchers.auction_fetcher import StockAuctionFetcher
 from hit_astocker.fetchers.daily_bar_fetcher import DailyBarFetcher
 from hit_astocker.fetchers.dragon_fetcher import DragonTigerFetcher, InstitutionalFetcher
+from hit_astocker.fetchers.hm_fetcher import HmDetailFetcher
 from hit_astocker.fetchers.hsgt_fetcher import HsgtTop10Fetcher
 from hit_astocker.fetchers.index_fetcher import IndexDailyFetcher
 from hit_astocker.fetchers.kpl_fetcher import KplFetcher
@@ -48,6 +49,7 @@ API_REGISTRY: list[tuple[str, str, type, dict[str, Any]]] = [
     ("hsgt_top10", "hsgt_top10", HsgtTop10Fetcher, {}),
     ("stk_auction", "stk_auction", StockAuctionFetcher, {}),
     ("anns_d", "anns_d", AnnouncementFetcher, {}),
+    ("hm_detail", "hm_detail", HmDetailFetcher, {}),
 ]
 
 
@@ -68,6 +70,9 @@ class SyncOrchestrator:
         """
         results = {}
         date_str = to_tushare_date(trade_date)
+
+        # Ensure one-time static data (hm_list trader roster)
+        self.ensure_hm_list()
 
         # Filter APIs
         registry = [
@@ -269,6 +274,16 @@ class SyncOrchestrator:
             logger.info("trade_cal table empty — fetching from Tushare")
             sync_trade_calendar(self._client, self._conn)
         init_trade_calendar(self._conn)
+
+    def ensure_hm_list(self) -> None:
+        """Sync hm_list (游资名录) if table is empty. One-time static data."""
+        from hit_astocker.fetchers.hm_fetcher import sync_hm_list
+
+        row = self._conn.execute("SELECT COUNT(*) FROM hm_list").fetchone()
+        if row[0] == 0:
+            logger.info("hm_list table empty — fetching trader roster from Tushare")
+            sync_hm_list(self._client, self._conn)
+            self._conn.commit()
 
     def sync_date_range(self, start: date, end: date) -> dict[str, dict[str, int]]:
         """Sync all APIs for a date range (real trading days only)."""

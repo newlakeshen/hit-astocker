@@ -1,5 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
+
+from hit_astocker.models.hm_data import SeatScore
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,5 @@ class InstitutionalTrade:
 class DragonTigerResult:
     trade_date: date
     records: tuple[DragonTigerRecord, ...]
-    institutional_net_buy: dict[str, float]  # ts_code -> net buy
-    hot_money_seats: dict[str, list[str]]  # ts_code -> seat names
-    cooperation_flags: tuple[str, ...]  # ts_codes with multi-seat cooperation
+    institutional_net_buy: dict[str, float]  # ts_code -> net buy (from top_inst)
+    seat_scores: dict[str, SeatScore] = field(default_factory=dict)  # ts_code -> quantified hm profile

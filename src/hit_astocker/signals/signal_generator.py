@@ -115,7 +115,7 @@ class SignalGenerator:
         if f.get("sector", 0) >= 80:
             parts.append("热点板块")
         if f.get("dragon_tiger", 0) >= 70:
-            parts.append("龙虎榜关注")
+            parts.append("游资关注")
         if f.get("capital_flow", 0) >= 70:
             parts.append("主力净流入")
         if f.get("northbound", 0) >= 70:

@@ -215,7 +215,7 @@ def signal_table(signals) -> Table:
 
 
 def dragon_tiger_table(dragon) -> Table:
-    """Build dragon-tiger board table."""
+    """Build dragon-tiger board table with quantified seat profiles."""
     table = Table(title="龙虎榜分析", show_header=True, header_style="bold cyan")
     table.add_column("#", justify="right", width=3)
     table.add_column("代码", width=10)
@@ -223,14 +223,23 @@ def dragon_tiger_table(dragon) -> Table:
     table.add_column("涨幅", justify="right", width=7)
     table.add_column("净买入", justify="right", width=10)
     table.add_column("机构净买", justify="right", width=10)
-    table.add_column("游资", width=6)
-    table.add_column("原因", width=20)
+    table.add_column("游资", width=8)
+    table.add_column("胜率", justify="right", width=5)
+    table.add_column("原因", width=16)
 
     sorted_records = sorted(dragon.records, key=lambda r: r.net_amount, reverse=True)
     for i, r in enumerate(sorted_records[:15], 1):
         inst_net = dragon.institutional_net_buy.get(r.ts_code, 0)
-        has_hot = "Y" if r.ts_code in dragon.hot_money_seats else ""
-        is_coop = "*" if r.ts_code in dragon.cooperation_flags else ""
+        seat = dragon.seat_scores.get(r.ts_code)
+
+        if seat:
+            count = seat.known_trader_count
+            coop = "+" if seat.is_coordinated else ""
+            seat_label = f"[bold red]{count}席{coop}[/]"
+            wr = f"{seat.max_win_rate:.0%}"
+        else:
+            seat_label = "-"
+            wr = "-"
 
         table.add_row(
             str(i),
@@ -239,7 +248,8 @@ def dragon_tiger_table(dragon) -> Table:
             f"[{pct_color(r.pct_change)}]{r.pct_change:.2f}%[/]",
             format_amount(r.net_amount),
             format_amount(inst_net) if inst_net else "-",
-            f"[bold red]{has_hot}{is_coop}[/]",
-            r.reason[:20],
+            seat_label,
+            wr,
+            r.reason[:16],
         )
     return table

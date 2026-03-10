@@ -170,13 +170,27 @@ def _common_factors(ts_code: str, m: _SharedMaps) -> dict[str, float]:
     else:
         factors["capital_flow"] = 50.0
 
-    # Dragon tiger
-    dt_score = 50.0
-    if ts_code in m.dragon.institutional_net_buy:
+    # Dragon tiger — quantified seat profile (hm_detail) with inst fallback
+    dt_score = 45.0
+    seat = m.dragon.seat_scores.get(ts_code)
+    if seat:
+        # Base: known trader presence
+        dt_score = 55.0
+        # Win rate boost: max trader win rate → up to +25
+        dt_score += seat.max_win_rate * 25
+        # Coordination boost: multiple buyers on same stock
+        if seat.is_coordinated:
+            dt_score += 12.0
+        # Net direction
+        if seat.known_net_amount > 0:
+            dt_score += 5.0
+        elif seat.known_net_amount < 0:
+            dt_score -= 10.0
+        dt_score = max(0, min(dt_score, 100))
+    elif ts_code in m.dragon.institutional_net_buy:
+        # Fallback: institutional only (top_inst, no hm data)
         net = m.dragon.institutional_net_buy[ts_code]
-        dt_score = 100.0 if net > 0 else 30.0
-    if ts_code in m.dragon.cooperation_flags:
-        dt_score = min(dt_score + 20, 100)
+        dt_score = 70.0 if net > 0 else 30.0
     factors["dragon_tiger"] = dt_score
 
     # Event catalyst

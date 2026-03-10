@@ -98,13 +98,18 @@ class StockPredictor:
                 industry = limit_up_info[ts_code].industry
             sector_score = 80.0 if industry in top_sector_names else 40.0
 
-            # Dragon-tiger score
+            # Dragon-tiger score — prefer hm seat data, fallback to inst
             dt_score = 50.0
-            inst_net = dragon.institutional_net_buy.get(ts_code, 0)
-            if inst_net > 0:
-                dt_score = 80.0
-            if ts_code in dragon.cooperation_flags:
-                dt_score = 90.0
+            seat = dragon.seat_scores.get(ts_code)
+            if seat:
+                dt_score = 55.0 + seat.max_win_rate * 25
+                if seat.is_coordinated:
+                    dt_score += 12.0
+                dt_score = min(dt_score, 100)
+            else:
+                inst_net = dragon.institutional_net_buy.get(ts_code, 0)
+                if inst_net > 0:
+                    dt_score = 80.0
 
             # Composite prediction score
             composite = (

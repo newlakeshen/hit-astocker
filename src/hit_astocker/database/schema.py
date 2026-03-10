@@ -351,6 +351,29 @@ TABLES = {
             PRIMARY KEY (ts_code, code)
         )
     """,
+    "hm_list": """
+        CREATE TABLE IF NOT EXISTS hm_list (
+            hm_name TEXT NOT NULL PRIMARY KEY,
+            desc TEXT DEFAULT '',
+            orgs TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """,
+    "hm_detail": """
+        CREATE TABLE IF NOT EXISTS hm_detail (
+            trade_date TEXT NOT NULL,
+            ts_code TEXT NOT NULL,
+            ts_name TEXT DEFAULT '',
+            buy_amount REAL DEFAULT 0,
+            sell_amount REAL DEFAULT 0,
+            net_amount REAL DEFAULT 0,
+            hm_name TEXT NOT NULL,
+            hm_orgs TEXT DEFAULT '',
+            tag TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (trade_date, ts_code, hm_name)
+        )
+    """,
     "sync_log": """
         CREATE TABLE IF NOT EXISTS sync_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -401,6 +424,10 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_concept_detail_name ON concept_detail(concept_name)",
     "CREATE INDEX IF NOT EXISTS idx_ths_member_code ON ths_member(code)",
     "CREATE INDEX IF NOT EXISTS idx_ths_member_concept ON ths_member(ts_code)",
+    "CREATE INDEX IF NOT EXISTS idx_hm_detail_date ON hm_detail(trade_date)",
+    "CREATE INDEX IF NOT EXISTS idx_hm_detail_code ON hm_detail(ts_code)",
+    "CREATE INDEX IF NOT EXISTS idx_hm_detail_name ON hm_detail(hm_name)",
+    "CREATE INDEX IF NOT EXISTS idx_hm_detail_name_date ON hm_detail(hm_name, trade_date)",
 ]
 
 

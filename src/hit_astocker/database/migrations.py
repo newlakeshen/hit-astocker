@@ -4,7 +4,7 @@ import sqlite3
 
 from hit_astocker.database.schema import init_schema
 
-CURRENT_VERSION = 8
+CURRENT_VERSION = 9
 
 # v6: ths_hot 补齐 data_type / current_price / rank_reason / rank_time
 _V6_ALTER_THS_HOT = [
