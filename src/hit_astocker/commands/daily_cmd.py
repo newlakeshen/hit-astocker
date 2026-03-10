@@ -47,6 +47,15 @@ def daily(
         # Generate signals from pre-computed context (no re-computation)
         signals = SignalGenerator(conn, settings).generate_from_context(ctx)
 
+        # Data coverage warning
+        if ctx.coverage.missing_sources:
+            missing = ", ".join(ctx.coverage.missing_sources)
+            console.print(
+                f"[yellow]  ⚠ 数据缺失: {missing}[/]\n"
+                "[dim]  对应因子已从评分权重中剔除，不影响其他因子准确性。"
+                "运行 sync 补齐数据后自动启用。[/]\n"
+            )
+
         render_dashboard(
             console,
             ctx.sentiment,

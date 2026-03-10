@@ -23,6 +23,7 @@ from hit_astocker.analyzers.backtest_engine import BacktestEngine, compute_backt
 from hit_astocker.config.settings import get_settings
 from hit_astocker.database.connection import get_connection
 from hit_astocker.database.migrations import ensure_schema
+from hit_astocker.models.daily_context import DataCoverage, table_has_data
 from hit_astocker.models.backtest import (
     BacktestConfig,
     BacktestStats,
@@ -118,6 +119,21 @@ def backtest(
 
     with get_connection(settings.db_path) as conn:
         ensure_schema(conn)
+
+        # One-time data coverage check
+        coverage = DataCoverage(
+            has_ths_hot=table_has_data(conn, "ths_hot"),
+            has_hsgt=table_has_data(conn, "hsgt_top10"),
+            has_stk_factor=table_has_data(conn, "stk_factor_pro"),
+            has_hm=table_has_data(conn, "hm_detail"),
+        )
+        if coverage.missing_sources:
+            missing = ", ".join(coverage.missing_sources)
+            console.print(
+                f"[yellow]  ⚠ 数据缺失: {missing}[/]\n"
+                "[dim]  对应因子已从评分权重中剔除。[/]\n"
+            )
+
         generator = SignalGenerator(conn, settings)
         engine = BacktestEngine(conn)
 

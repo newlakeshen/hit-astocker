@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from hit_astocker.analyzers.board_survival import SurvivalModel
@@ -15,6 +15,42 @@ from hit_astocker.models.dragon_tiger import DragonTigerResult
 from hit_astocker.models.event_data import EventAnalysisResult, StockSentimentScore
 from hit_astocker.models.sector import SectorRotationResult
 from hit_astocker.models.sentiment import SentimentScore
+
+
+@dataclass(frozen=True)
+class DataCoverage:
+    """Tracks which factor data sources have real backing data.
+
+    When a backing table is empty (not synced), the corresponding factor
+    should be excluded from weighted scoring — not defaulted to 45/50.
+    """
+
+    has_ths_hot: bool = False       # ths_hot (同花顺热股 → popularity factor)
+    has_hsgt: bool = False          # hsgt_top10 (北向资金 → northbound factor)
+    has_stk_factor: bool = False    # stk_factor_pro (技术因子 → technical_form)
+    has_hm: bool = False            # hm_detail (游资席位 → dragon_tiger boost)
+
+    @property
+    def missing_sources(self) -> list[str]:
+        """Return human-readable names of data sources with no data."""
+        names = []
+        if not self.has_ths_hot:
+            names.append("ths_hot (同花顺热股)")
+        if not self.has_hsgt:
+            names.append("hsgt_top10 (北向资金)")
+        if not self.has_stk_factor:
+            names.append("stk_factor_pro (技术因子)")
+        if not self.has_hm:
+            names.append("hm_detail (游资席位)")
+        return names
+
+    @property
+    def active_count(self) -> int:
+        return sum([self.has_ths_hot, self.has_hsgt, self.has_stk_factor, self.has_hm])
+
+    @property
+    def total_count(self) -> int:
+        return 4
 
 
 @dataclass(frozen=True)
@@ -32,6 +68,16 @@ class DailyAnalysisContext:
     hsgt_net_map: dict[str, float]
     moneyflow: tuple[MoneyFlowResult, ...]
     stock_sentiments: tuple[StockSentimentScore, ...]
+    coverage: DataCoverage = field(default_factory=DataCoverage)
+
+
+def table_has_data(conn: sqlite3.Connection, table: str) -> bool:
+    """Check if a table exists and has at least one row."""
+    try:
+        row = conn.execute(f"SELECT 1 FROM [{table}] LIMIT 1").fetchone()  # noqa: S608
+        return row is not None
+    except Exception:
+        return False
 
 
 def build_daily_context(
@@ -58,6 +104,14 @@ def build_daily_context(
     from hit_astocker.analyzers.stock_sentiment import StockSentimentAnalyzer
     from hit_astocker.repositories.hsgt_repo import HsgtTop10Repository
 
+    # ── Data coverage detection (one-time O(1) checks) ──
+    coverage = DataCoverage(
+        has_ths_hot=table_has_data(conn, "ths_hot"),
+        has_hsgt=table_has_data(conn, "hsgt_top10"),
+        has_stk_factor=table_has_data(conn, "stk_factor_pro"),
+        has_hm=table_has_data(conn, "hm_detail"),
+    )
+
     # Phase 1: independent analyzers
     sentiment = SentimentAnalyzer(conn, settings).analyze(trade_date)
     firstboard = FirstBoardAnalyzer(conn, settings).analyze(trade_date)
@@ -81,7 +135,9 @@ def build_daily_context(
             leader_codes.add(code)
     candidate_codes = list(fb_codes | lianban_codes | leader_codes)
     moneyflow = MoneyFlowAnalyzer(conn).analyze(trade_date, candidate_codes)
-    stock_sentiments = StockSentimentAnalyzer(conn).analyze(trade_date, candidate_codes)
+    stock_sentiments = StockSentimentAnalyzer(conn).analyze(
+        trade_date, candidate_codes, coverage=coverage,
+    )
 
     return DailyAnalysisContext(
         trade_date=trade_date,
@@ -95,4 +151,5 @@ def build_daily_context(
         hsgt_net_map=hsgt_net_map,
         moneyflow=tuple(moneyflow),
         stock_sentiments=tuple(stock_sentiments),
+        coverage=coverage,
     )

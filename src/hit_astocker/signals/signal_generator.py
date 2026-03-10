@@ -44,6 +44,7 @@ class SignalGenerator:
             stock_sentiments=list(ctx.stock_sentiments),
             survival_model=ctx.survival_model,
             hsgt_net_map=ctx.hsgt_net_map,
+            coverage=ctx.coverage,
         )
 
         signals = []

@@ -6,7 +6,17 @@ Each signal type has its own factor set, weight distribution, and scoring logic:
   - SECTOR_LEADER(空间板龙头):      theme_heat + leader_position 为核心
 
 All weights are read from Settings — never hard-coded here.
+
+Dynamic weight redistribution:
+  When a factor's backing data is entirely missing (table empty / not synced),
+  the factor is set to None and its weight is redistributed proportionally
+  to factors with real data. This prevents phantom 45/50 defaults from
+  inflating scores.
 """
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from hit_astocker.analyzers.board_survival import BoardSurvivalAnalyzer, SurvivalModel
 from hit_astocker.config.settings import Settings, get_settings
@@ -15,6 +25,9 @@ from hit_astocker.models.dragon_tiger import DragonTigerResult
 from hit_astocker.models.event_data import EventAnalysisResult, StockSentimentScore, ThemeHeat
 from hit_astocker.models.sector import SectorRotationResult
 from hit_astocker.models.sentiment import SentimentScore
+
+if TYPE_CHECKING:
+    from hit_astocker.models.daily_context import DataCoverage
 
 
 class ScoredCandidate:
@@ -44,6 +57,7 @@ class CompositeScorer:
         stock_sentiments: list[StockSentimentScore] | None = None,
         survival_model: SurvivalModel | None = None,
         hsgt_net_map: dict[str, float] | None = None,
+        coverage: DataCoverage | None = None,
     ) -> list[ScoredCandidate]:
         s = self._settings
 
@@ -68,6 +82,7 @@ class CompositeScorer:
             sentiment_map=sentiment_map,
             northbound_map=northbound_map,
             survival_model=survival_model,
+            coverage=coverage,
         )
 
         # ── 1. FIRST_BOARD (首板弱转强/回封) ─────────────────────────
@@ -75,15 +90,16 @@ class CompositeScorer:
         candidates: list[ScoredCandidate] = []
 
         for fb in firstboard_results:
-            factors = _common_factors(fb.ts_code, shared)
-            factors["seal_quality"] = fb.composite_score
-            factors["sector"] = 100.0 if fb.industry in sector_names else factors["sector"]
-            factors["survival"] = _survival_score(1, survival_model)
+            raw = _common_factors(fb.ts_code, shared)
+            raw["seal_quality"] = fb.composite_score
+            raw["sector"] = 100.0 if fb.industry in sector_names else raw["sector"]
+            raw["survival"] = _survival_score(1, survival_model)
 
             weights = _fb_weights(s)
-            composite = _weighted_sum(factors, weights)
+            composite = _weighted_sum(raw, weights)
+            clean = {k: v for k, v in raw.items() if v is not None}
             candidates.append(ScoredCandidate(
-                fb.ts_code, fb.name, round(composite, 2), factors, "FIRST_BOARD",
+                fb.ts_code, fb.name, round(composite, 2), clean, "FIRST_BOARD",
             ))
             scored_codes.add(fb.ts_code)
 
@@ -94,14 +110,15 @@ class CompositeScorer:
             for code, name in zip(tier.stocks, tier.stock_names, strict=False):
                 if code in scored_codes:
                     continue
-                factors = _common_factors(code, shared)
-                factors["survival"] = _survival_score(tier.height, survival_model)
-                factors["height_momentum"] = _score_height_momentum(tier.height)
+                raw = _common_factors(code, shared)
+                raw["survival"] = _survival_score(tier.height, survival_model)
+                raw["height_momentum"] = _score_height_momentum(tier.height)
 
                 weights = _fl_weights(s)
-                composite = _weighted_sum(factors, weights)
+                composite = _weighted_sum(raw, weights)
+                clean = {k: v for k, v in raw.items() if v is not None}
                 candidates.append(ScoredCandidate(
-                    code, name, round(composite, 2), factors, "FOLLOW_BOARD",
+                    code, name, round(composite, 2), clean, "FOLLOW_BOARD",
                 ))
                 scored_codes.add(code)
 
@@ -113,20 +130,22 @@ class CompositeScorer:
                 for code, name in zip(th.leader_codes, th.leader_names, strict=False):
                     if code in scored_codes:
                         continue
-                    factors = _common_factors(code, shared)
-                    factors["theme_heat"] = th.heat_score
-                    factors["leader_position"] = _score_leader_position(code, th)
+                    raw = _common_factors(code, shared)
+                    raw["theme_heat"] = th.heat_score
+                    raw["leader_position"] = _score_leader_position(code, th)
                     # Leaders of hot themes → full sector score
-                    factors["sector"] = 100.0
+                    raw["sector"] = 100.0
                     # Boost event_catalyst with theme heat
-                    factors["event_catalyst"] = max(
-                        factors["event_catalyst"], th.heat_score,
+                    ec = raw.get("event_catalyst")
+                    raw["event_catalyst"] = max(
+                        ec if ec is not None else 0.0, th.heat_score,
                     )
 
                     weights = _sl_weights(s)
-                    composite = _weighted_sum(factors, weights)
+                    composite = _weighted_sum(raw, weights)
+                    clean = {k: v for k, v in raw.items() if v is not None}
                     candidates.append(ScoredCandidate(
-                        code, name, round(composite, 2), factors, "SECTOR_LEADER",
+                        code, name, round(composite, 2), clean, "SECTOR_LEADER",
                     ))
                     scored_codes.add(code)
 
@@ -141,6 +160,7 @@ class _SharedMaps:
     __slots__ = (
         "sentiment", "sector_names", "moneyflow_map", "dragon",
         "event_map", "sentiment_map", "northbound_map", "survival_model",
+        "coverage",
     )
 
     def __init__(self, **kwargs):
@@ -151,14 +171,20 @@ class _SharedMaps:
 # ── common factor computation ─────────────────────────────────────────
 
 
-def _common_factors(ts_code: str, m: _SharedMaps) -> dict[str, float]:
-    """Compute factors shared by all three signal types."""
-    factors: dict[str, float] = {
+def _common_factors(ts_code: str, m: _SharedMaps) -> dict[str, float | None]:
+    """Compute factors shared by all three signal types.
+
+    Returns None for factors whose backing data source is empty.
+    _weighted_sum() will skip None factors and renormalize weights.
+    """
+    cov = m.coverage  # may be None (backward compat)
+
+    factors: dict[str, float | None] = {
         "sentiment": m.sentiment.overall_score,
         "sector": 30.0,
     }
 
-    # Money flow
+    # Money flow (moneyflow_ths has data)
     mf = m.moneyflow_map.get(ts_code)
     if mf:
         if mf.flow_strength == "STRONG_IN":
@@ -171,52 +197,54 @@ def _common_factors(ts_code: str, m: _SharedMaps) -> dict[str, float]:
         factors["capital_flow"] = 50.0
 
     # Dragon tiger — quantified seat profile (hm_detail) with inst fallback
-    dt_score = 45.0
+    # top_list/top_inst always have data; hm boost is optional
+    dt_score: float = 45.0
     seat = m.dragon.seat_scores.get(ts_code)
     if seat:
-        # Base: known trader presence
         dt_score = 55.0
-        # Win rate boost: max trader win rate → up to +25
         dt_score += seat.max_win_rate * 25
-        # Coordination boost: multiple buyers on same stock
         if seat.is_coordinated:
             dt_score += 12.0
-        # Net direction
         if seat.known_net_amount > 0:
             dt_score += 5.0
         elif seat.known_net_amount < 0:
             dt_score -= 10.0
         dt_score = max(0, min(dt_score, 100))
     elif ts_code in m.dragon.institutional_net_buy:
-        # Fallback: institutional only (top_inst, no hm data)
         net = m.dragon.institutional_net_buy[ts_code]
         dt_score = 70.0 if net > 0 else 30.0
     factors["dragon_tiger"] = dt_score
 
-    # Event catalyst
+    # Event catalyst (KPL L3 fallback always available)
     ev = m.event_map.get(ts_code)
     factors["event_catalyst"] = ev.event_weight * 100 if ev else 50.0
 
-    # Stock sentiment (8-factor)
+    # Stock sentiment (composite — internally uses dynamic weighting)
     ss = m.sentiment_map.get(ts_code)
     factors["stock_sentiment"] = ss.composite_score if ss else 50.0
 
-    # Northbound
-    nb_net = m.northbound_map.get(ts_code)
-    if nb_net is not None:
-        if nb_net >= 10000:
-            factors["northbound"] = 100.0
-        elif nb_net >= 5000:
-            factors["northbound"] = 85.0
-        elif nb_net > 0:
-            factors["northbound"] = 70.0
-        else:
-            factors["northbound"] = 25.0
+    # Northbound — None when hsgt_top10 is empty (no data synced)
+    if cov and not cov.has_hsgt:
+        factors["northbound"] = None
     else:
-        factors["northbound"] = 45.0
+        nb_net = m.northbound_map.get(ts_code)
+        if nb_net is not None:
+            if nb_net >= 10000:
+                factors["northbound"] = 100.0
+            elif nb_net >= 5000:
+                factors["northbound"] = 85.0
+            elif nb_net > 0:
+                factors["northbound"] = 70.0
+            else:
+                factors["northbound"] = 25.0
+        else:
+            factors["northbound"] = 45.0  # not in top 10, but table has data
 
-    # Technical form
-    factors["technical_form"] = ss.technical_form_score if ss else 50.0
+    # Technical form — None when stk_factor_pro is empty
+    if cov and not cov.has_stk_factor:
+        factors["technical_form"] = None
+    else:
+        factors["technical_form"] = ss.technical_form_score if ss else 50.0
 
     return factors
 
@@ -321,6 +349,21 @@ def _sl_weights(s: Settings) -> dict[str, float]:
     }
 
 
-def _weighted_sum(factors: dict[str, float], weights: dict[str, float]) -> float:
-    """Compute weighted sum — only factors present in weights are included."""
-    return sum(weights[k] * factors.get(k, 50.0) for k in weights)
+def _weighted_sum(factors: dict[str, float | None], weights: dict[str, float]) -> float:
+    """Compute weighted sum with dynamic renormalization.
+
+    Factors set to None (no backing data) are skipped entirely.
+    Their weight is redistributed proportionally to available factors.
+    When all factors have data, this is equivalent to a simple weighted sum.
+    """
+    available: list[tuple[str, float]] = []
+    for k in weights:
+        v = factors.get(k)
+        if v is not None:
+            available.append((k, v))
+    if not available:
+        return 0.0
+    total_w = sum(weights[k] for k, _ in available)
+    if total_w <= 0:
+        return 0.0
+    return sum(weights[k] / total_w * v for k, v in available)

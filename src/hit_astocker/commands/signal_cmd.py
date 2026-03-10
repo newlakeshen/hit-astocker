@@ -8,6 +8,7 @@ from rich.console import Console
 from hit_astocker.config.settings import get_settings
 from hit_astocker.database.connection import get_connection
 from hit_astocker.database.migrations import ensure_schema
+from hit_astocker.models.daily_context import build_daily_context
 from hit_astocker.renderers.tables import signal_table
 from hit_astocker.renderers.theme import APP_THEME
 from hit_astocker.signals.signal_generator import SignalGenerator
@@ -28,8 +29,19 @@ def signal(
 
     with get_connection(settings.db_path) as conn:
         ensure_schema(conn)
+
+        ctx = build_daily_context(conn, settings, trade_date)
+
+        # Data coverage warning
+        if ctx.coverage.missing_sources:
+            missing = ", ".join(ctx.coverage.missing_sources)
+            console.print(
+                f"[yellow]  ⚠ 数据缺失: {missing}[/]\n"
+                "[dim]  对应因子已从评分权重中剔除。运行 sync 补齐数据后自动启用。[/]\n"
+            )
+
         generator = SignalGenerator(conn, settings)
-        signals = generator.generate(trade_date)
+        signals = generator.generate_from_context(ctx)
 
         # Filter by risk
         risk_order = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "EXTREME": 3, "NO_GO": 4}

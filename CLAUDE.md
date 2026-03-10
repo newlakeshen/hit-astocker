@@ -61,7 +61,7 @@ Concurrency model:
 - `repositories/` - SQLite data access layer (13 repositories)
   - Includes: `ths_hot_repo.py`, `hsgt_repo.py`, `stk_factor_repo.py`
 - `models/` - Frozen dataclass models
-  - Includes: `ths_hot_data.py`, `hsgt_data.py`, `stk_factor_data.py`, `backtest.py` (TradeResult/BacktestStats)
+  - Includes: `ths_hot_data.py`, `hsgt_data.py`, `stk_factor_data.py`, `backtest.py` (TradeResult/BacktestStats), `daily_context.py` (DataCoverage)
 - `commands/` - CLI command handlers (13 commands including `event` and `backtest --detail`)
 - `renderers/` - Rich terminal output (tables, dashboard, theme)
 
@@ -81,27 +81,17 @@ hit-astocker firstboard / lianban / sector / dragon / flow / predict
 
 ## Scoring System
 
-### Composite Score (10 factors, 0-100):
-- 17% 市场情绪 (sentiment, index-adjusted)
-- 16% 封板质量 (seal quality)
-- 12% 板块归属 (sector)
-- 10% 事件催化 (event catalyst)
-- 10% 个股情绪 (stock sentiment, 8-factor enhanced)
-- 8% 连板生存率 (lianban survival rate, 10-year stats)
-- 7% 资金流向 (capital flow)
-- 7% 龙虎榜 (dragon tiger)
-- 7% 北向资金 (northbound capital)
-- 6% 技术形态 (technical form: MACD/KDJ/RSI/BOLL)
+### Composite Score (10 factors, dynamic weights):
+- Base weights: sentiment(12-17%), seal_quality(16-22%), sector(8-12%), event_catalyst(5-12%), stock_sentiment(7-12%), survival(6-22%), capital_flow(5-8%), dragon_tiger(5-10%), northbound(5-7%), technical_form(3-12%)
+- Three models: FIRST_BOARD / FOLLOW_BOARD / SECTOR_LEADER, each with distinct weight profiles
+- **Dynamic weight redistribution**: factors backed by empty tables (not synced) are excluded; their weight is redistributed proportionally to factors with real data
+- `DataCoverage` tracks: has_ths_hot, has_hsgt, has_stk_factor, has_hm
+- Commands display "⚠ 数据缺失" warning when factors are excluded
 
-### Stock Sentiment (8 sub-factors, 0-100):
-- 15% 量比 (volume ratio)
-- 15% 同花顺人气 (THS hot ranking)
-- 14% 封单强度 (seal order)
-- 13% 北向资金 (northbound signal)
-- 12% 题材热度 (theme heat)
-- 12% 技术形态 (technical form)
-- 11% 事件催化 (event catalyst)
-- 8% 竞价活跃度 (bid activity)
+### Stock Sentiment (up to 8 sub-factors, dynamic weights):
+- Core 5 (always available): volume_ratio(15%), seal_order(14%), bid_activity(8%), theme_heat(12%), event_catalyst(11%)
+- Optional 3 (require synced tables): popularity/ths_hot(15%), northbound/hsgt(13%), technical_form/stk_factor(12%)
+- When optional tables are empty, core weights are renormalized to sum=1
 
 ### Risk Assessment (Dynamic):
 - Thresholds auto-adjust by market regime (STRONG_BULL → STRONG_BEAR)
