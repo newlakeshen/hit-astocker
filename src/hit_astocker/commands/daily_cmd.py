@@ -1,6 +1,5 @@
 """Daily dashboard command."""
 
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 import typer
@@ -47,25 +46,13 @@ def daily(
             console.print(f"[yellow]No data for {trade_date}. Run 'hit-astocker sync -d {date_str or trade_date.strftime('%Y%m%d')}' first.[/]")
             raise typer.Exit(1)
 
-        # Run independent read-only analyses in parallel
-        # Note: SignalGenerator runs sequentially after because it spawns
-        # its own parallel pool and would cause nested concurrency issues.
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            f_sentiment = pool.submit(SentimentAnalyzer(conn, settings).analyze, trade_date)
-            f_firstboard = pool.submit(FirstBoardAnalyzer(conn, settings).analyze, trade_date)
-            f_lianban = pool.submit(LianbanAnalyzer(conn).analyze, trade_date)
-            f_sector = pool.submit(SectorRotationAnalyzer(conn).analyze, trade_date)
-            f_dragon = pool.submit(DragonTigerAnalyzer(conn).analyze, trade_date)
-            f_event = pool.submit(EventClassifier(conn).analyze, trade_date)
-
-        sentiment = f_sentiment.result()
-        firstboard = f_firstboard.result()
-        lianban = f_lianban.result()
-        sector = f_sector.result()
-        dragon = f_dragon.result()
-        event_result = f_event.result()
-
-        # SignalGenerator runs sequentially (it has its own internal parallelism)
+        # Run analyses sequentially (single connection — not thread-safe)
+        sentiment = SentimentAnalyzer(conn, settings).analyze(trade_date)
+        firstboard = FirstBoardAnalyzer(conn, settings).analyze(trade_date)
+        lianban = LianbanAnalyzer(conn).analyze(trade_date)
+        sector = SectorRotationAnalyzer(conn).analyze(trade_date)
+        dragon = DragonTigerAnalyzer(conn).analyze(trade_date)
+        event_result = EventClassifier(conn).analyze(trade_date)
         signals = SignalGenerator(conn, settings).generate(trade_date)
 
         render_dashboard(

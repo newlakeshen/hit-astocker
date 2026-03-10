@@ -17,7 +17,7 @@ def _init_connection(conn: sqlite3.Connection) -> None:
 def get_connection(db_path: Path | None = None) -> Generator[sqlite3.Connection, None, None]:
     path = db_path or get_settings().db_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), check_same_thread=False)
+    conn = sqlite3.connect(str(path))
     _init_connection(conn)
     try:
         yield conn
