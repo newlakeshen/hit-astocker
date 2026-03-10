@@ -1,12 +1,18 @@
-"""Backtest command: realistic board-hitting simulation with three execution modes.
+"""Backtest command: realistic board-hitting simulation with friction costs.
 
 Execution modes:
   AUCTION        — 复盘选股→次日竞价买 (T+1 open)
   WEAK_TO_STRONG — 弱转强开盘买 (T+1 open, only if open < T close)
   RE_SEAL        — 回封买 (T+1 close, only if board re-sealed)
 
+Friction:
+  滑点 / 佣金 / 印花税 / 竞价溢价上限 / 排板成交率
+
 Trade lifecycle: T signal → T+1 buy → T+2 sell (A-share T+1 rule).
 """
+
+import logging
+import math
 
 import typer
 from rich.console import Console
@@ -26,9 +32,15 @@ from hit_astocker.models.backtest import (
 )
 from hit_astocker.renderers.theme import APP_THEME, pct_color, risk_color, score_color
 from hit_astocker.signals.signal_generator import SignalGenerator
-from hit_astocker.utils.date_utils import from_tushare_date, get_next_trading_day, get_trading_days_between
+from hit_astocker.utils.date_utils import (
+    from_tushare_date,
+    get_next_trading_day,
+    get_trading_days_between,
+)
 
-backtest_app = typer.Typer(name="backtest", help="真实打板回测 (三种执行方式 + 止损/兑现)")
+logger = logging.getLogger(__name__)
+
+backtest_app = typer.Typer(name="backtest", help="真实打板回测 (三种执行方式 + 摩擦成本)")
 console = Console(theme=APP_THEME)
 
 _MODE_LABELS = {
@@ -56,6 +68,8 @@ _SKIP_LABELS = {
     "NO_RESEAL": "未回封",
     "NO_T1_BAR": "无T+1数据",
     "NO_T2_BAR": "无T+2数据",
+    "PREMIUM_TOO_HIGH": "溢价超限",
+    "LOW_FILL_RATE": "换手过低",
 }
 
 
@@ -63,12 +77,17 @@ _SKIP_LABELS = {
 def backtest(
     start: str = typer.Option(..., "--start", "-s", help="起始日期 (YYYYMMDD)"),
     end: str = typer.Option(..., "--end", "-e", help="结束日期 (YYYYMMDD)"),
-    mode: str = typer.Option("AUCTION", "--mode", "-m", help="执行方式: AUCTION / WEAK_TO_STRONG / RE_SEAL"),
-    stop_loss: float = typer.Option(-7.0, "--stop-loss", help="止损线 (%), 负数"),
-    take_profit: float = typer.Option(5.0, "--take-profit", help="止盈线 (%), 正数"),
+    mode: str = typer.Option(
+        "AUCTION", "--mode", "-m",
+        help="执行方式: AUCTION / WEAK_TO_STRONG / RE_SEAL",
+    ),
+    stop_loss: float = typer.Option(-7.0, "--stop-loss", help="止损线 (%%, 负数)"),
+    take_profit: float = typer.Option(5.0, "--take-profit", help="止盈线 (%%, 正数)"),
+    slippage: float = typer.Option(10.0, "--slippage", help="滑点 (基点, 单边)"),
+    max_premium: float = typer.Option(7.0, "--max-premium", help="竞价溢价上限 (%%)"),
     detail: bool = typer.Option(False, "--detail", help="显示逐笔明细"),
 ):
-    """真实打板回测: T信号 → T+1买入 → T+2卖出."""
+    """真实打板回测: T信号 → T+1买入 → T+2卖出, 含摩擦成本."""
     settings = get_settings()
     start_date = from_tushare_date(start)
     end_date = from_tushare_date(end)
@@ -76,13 +95,25 @@ def backtest(
     try:
         exec_mode = ExecutionMode(mode.upper())
     except ValueError:
-        console.print(f"[bold red]无效执行方式: {mode}[/]  (可选: AUCTION / WEAK_TO_STRONG / RE_SEAL)")
+        console.print(
+            f"[bold red]无效执行方式: {mode}[/]"
+            "  (可选: AUCTION / WEAK_TO_STRONG / RE_SEAL)"
+        )
+        raise typer.Exit(1)
+
+    if stop_loss >= 0:
+        console.print("[bold red]止损线必须为负数 (如 -7.0)[/]")
+        raise typer.Exit(1)
+    if take_profit <= 0:
+        console.print("[bold red]止盈线必须为正数 (如 5.0)[/]")
         raise typer.Exit(1)
 
     config = BacktestConfig(
         execution_mode=exec_mode,
         stop_loss_pct=stop_loss,
         take_profit_pct=take_profit,
+        slippage_bps=slippage,
+        max_open_premium_pct=max_premium,
     )
 
     with get_connection(settings.db_path) as conn:
@@ -99,18 +130,29 @@ def backtest(
         for d in trading_dates:
             try:
                 signals = generator.generate(d)
-            except Exception:
+            except Exception as exc:
+                logger.warning("信号生成失败 [%s]: %s", d, exc)
                 continue
 
-            total_signals += len(signals)
             if not signals:
                 continue
 
             t1 = get_next_trading_day(d)
             t2 = get_next_trading_day(t1) if t1 else None
             if not t1 or not t2:
+                # Count these signals as skipped (no T+1/T+2 data)
+                for sig in signals:
+                    all_skipped.append(SkippedSignal(
+                        trade_date=sig.trade_date,
+                        ts_code=sig.ts_code,
+                        name=sig.name,
+                        signal_score=sig.composite_score,
+                        skip_reason="NO_T2_BAR",
+                    ))
+                total_signals += len(signals)
                 continue
 
+            total_signals += len(signals)
             day_result = engine.simulate_day(signals, config, d, t1, t2)
             all_trades.extend(day_result.trades)
             all_skipped.extend(day_result.skipped)
@@ -148,11 +190,16 @@ def backtest(
 
 def _render_config(config: BacktestConfig, start: str, end: str) -> None:
     mode_label = _MODE_LABELS.get(config.execution_mode.value, config.execution_mode.value)
+    cost_bps = (config.commission_rate * 2 + config.stamp_duty_rate) * 10000
     text = (
         f"区间 {start} ~ {end}  |  "
         f"模式 [bold cyan]{mode_label}[/]  |  "
         f"止损 [bold green]{config.stop_loss_pct:+.1f}%[/]  |  "
-        f"止盈 [bold red]{config.take_profit_pct:+.1f}%[/]"
+        f"止盈 [bold red]{config.take_profit_pct:+.1f}%[/]\n"
+        f"滑点 {config.slippage_bps:.0f}bp  |  "
+        f"手续费 {cost_bps:.0f}bp/笔  |  "
+        f"溢价上限 {config.max_open_premium_pct:.0f}%  |  "
+        f"回封换手 ≥{config.min_reseal_turnover:.0f}%"
     )
     console.print(Panel(text, title="回测配置", border_style="cyan"))
 
@@ -173,12 +220,15 @@ def _render_summary(stats: BacktestStats) -> None:
         table.add_row("盈利次数", f"[bold red]{stats.win_count}[/]")
         table.add_row("亏损次数", f"[bold green]{stats.loss_count}[/]")
         table.add_row("", "")
-        table.add_row("平均盈亏", f"[{pct_color(stats.avg_pnl)}]{stats.avg_pnl:+.2f}%[/]")
-        table.add_row("累计盈亏", f"[{pct_color(stats.total_pnl)}]{stats.total_pnl:+.2f}%[/]")
+        table.add_row("平均净盈亏", f"[{pct_color(stats.avg_pnl)}]{stats.avg_pnl:+.2f}%[/]")
+        table.add_row("累计净盈亏", f"[{pct_color(stats.total_pnl)}]{stats.total_pnl:+.2f}%[/]")
+        table.add_row("平均摩擦成本", f"[dim]{stats.avg_cost:.2f}%/笔[/]")
         table.add_row("单笔最大盈利", f"[bold red]{stats.max_win:+.2f}%[/]")
         table.add_row("单笔最大亏损", f"[bold green]{stats.max_loss:+.2f}%[/]")
         pf_color = "bold red" if stats.profit_factor >= 1.0 else "bold green"
-        pf_str = f"{stats.profit_factor:.2f}" if stats.profit_factor < 999 else "INF"
+        pf_str = "INF" if math.isinf(stats.profit_factor) else f"{stats.profit_factor:.2f}"
+        if math.isnan(stats.profit_factor):
+            pf_str = "N/A"
         table.add_row("盈亏比", f"[{pf_color}]{pf_str}[/]")
         table.add_row("最大连亏", str(stats.consecutive_losses))
 
@@ -298,7 +348,7 @@ def _render_score_breakdown(stats: BacktestStats) -> None:
 
 
 def _render_detail(trades: list[TradeResult]) -> None:
-    table = Table(title="逐笔交易明细 (Top 30)", header_style="bold cyan")
+    table = Table(title="逐笔明细 (盈亏排序, Top 30)", header_style="bold cyan")
     table.add_column("#", justify="right", width=3)
     table.add_column("信号日", width=10)
     table.add_column("类型", width=4)
@@ -308,8 +358,8 @@ def _render_detail(trades: list[TradeResult]) -> None:
     table.add_column("买入价", justify="right", width=8)
     table.add_column("卖出价", justify="right", width=8)
     table.add_column("出场", width=4)
-    table.add_column("盈亏%", justify="right", width=8)
-    table.add_column("开盘溢价", justify="right", width=8)
+    table.add_column("净盈亏", justify="right", width=8)
+    table.add_column("成本", justify="right", width=6)
 
     sorted_t = sorted(trades, key=lambda t: t.pnl_pct, reverse=True)
     for i, t in enumerate(sorted_t[:30], 1):
@@ -326,7 +376,7 @@ def _render_detail(trades: list[TradeResult]) -> None:
             f"{t.exit_price:.2f}",
             exit_label,
             f"[{pct_color(t.pnl_pct)}]{t.pnl_pct:+.2f}%[/]",
-            f"[{pct_color(t.t1_open_pct)}]{t.t1_open_pct:+.2f}%[/]",
+            f"[dim]{t.cost_pct:.2f}%[/]",
         )
 
     console.print(table)

@@ -1,14 +1,14 @@
-"""Backtest engine — realistic board-hitting trade simulation.
+"""Backtest engine — realistic board-hitting trade simulation with friction.
 
-Simulates three execution modes with proper A-share T+1 settlement:
+Trade lifecycle (A-share T+1 settlement):
   T  : signal generated (limit-up stock scored)
-  T+1: execute buy (entry)
-  T+2: execute sell (exit, earliest possible under T+1 rule)
+  T+1: execute buy (entry, after slippage)
+  T+2: execute sell (exit, after slippage, commissions, stamp duty)
 
 Entry rules:
-  AUCTION        — buy at T+1 open; skip 一字板 (can't buy)
-  WEAK_TO_STRONG — buy at T+1 open only if open < T close (gap-down → potential reversal)
-  RE_SEAL        — buy at T+1 close (limit-up price) only if T+1 re-sealed (open_times > 0)
+  AUCTION        — buy at T+1 open; skip 一字板 / 溢价超限
+  WEAK_TO_STRONG — buy at T+1 open only if open < T close
+  RE_SEAL        — buy at T+1 close only if re-sealed AND turnover >= threshold
 
 Exit rules (T+2, priority order):
   1. 一字跌停 → YIZI_HELD (can't sell, stuck at limit-down)
@@ -18,9 +18,16 @@ Exit rules (T+2, priority order):
   5. high touches target      → TAKE_PROFIT at target_price
   6. both 4 & 5 on same bar  → STOP_LOSS (conservative)
   7. default                  → CLOSE at T+2 close
+
+Friction applied to every trade:
+  - Slippage: entry * (1 + bps/10000), exit * (1 - bps/10000)
+  - Commission: rate * entry + rate * exit
+  - Stamp duty: rate * exit (sell-side only)
 """
 
+import math
 import sqlite3
+from collections.abc import Callable
 from datetime import date
 
 from hit_astocker.models.backtest import (
@@ -123,27 +130,60 @@ class BacktestEngine:
             and t1_limit.open_times > 0
         )
 
-        # ── Determine entry ──
-        entry_price = self._determine_entry(
+        # ── Determine raw entry price ──
+        raw_entry = self._determine_entry(
             config.execution_mode, t1_bar, signal_close, is_yizi, is_reseal,
         )
-        if entry_price is None:
-            reason = self._entry_skip_reason(config.execution_mode, is_yizi, is_reseal, t1_bar, signal_close)
+        if raw_entry is None:
+            reason = self._entry_skip_reason(
+                config.execution_mode, is_yizi, is_reseal, t1_bar, signal_close,
+            )
             return self._skip(sig, reason)
 
-        if entry_price <= 0:
+        if raw_entry <= 0:
             return self._skip(sig, SkipReason.NO_T1_BAR)
 
-        # ── Determine exit ──
+        # ── Open premium filter (AUCTION / WEAK_TO_STRONG) ──
+        if config.execution_mode in (ExecutionMode.AUCTION, ExecutionMode.WEAK_TO_STRONG):
+            if signal_close > 0:
+                open_prem = (t1_bar.open - signal_close) / signal_close * 100
+                if open_prem > config.max_open_premium_pct:
+                    return self._skip(sig, SkipReason.PREMIUM_TOO_HIGH)
+
+        # ── Fill rate filter (RE_SEAL: low turnover → queue can't fill) ──
+        if config.execution_mode == ExecutionMode.RE_SEAL:
+            if t1_limit and t1_limit.turnover_ratio < config.min_reseal_turnover:
+                return self._skip(sig, SkipReason.LOW_FILL_RATE)
+
+        # ── Apply slippage to entry ──
+        slip = config.slippage_bps / 10000
+        eff_entry = raw_entry * (1 + slip)
+
+        # ── Determine raw exit ──
         t2_bar = t2_bars.get(code)
         if not t2_bar:
             return self._skip(sig, SkipReason.NO_T2_BAR)
 
         t2_limit = t2_limits.get(code)
-        exit_price, exit_reason = self._determine_exit(entry_price, t2_bar, t2_limit, config)
+        raw_exit, exit_reason = self._determine_exit(eff_entry, t2_bar, t2_limit, config)
 
-        pnl_pct = (exit_price - entry_price) / entry_price * 100
-        t1_open_pct = (t1_bar.open - signal_close) / signal_close * 100 if signal_close > 0 else 0.0
+        # ── Apply slippage to exit ──
+        eff_exit = raw_exit * (1 - slip)
+
+        # ── Compute costs ──
+        buy_comm = eff_entry * config.commission_rate
+        sell_comm = eff_exit * config.commission_rate
+        stamp = eff_exit * config.stamp_duty_rate
+        total_cost = buy_comm + sell_comm + stamp
+        cost_pct = total_cost / eff_entry * 100 if eff_entry > 0 else 0.0
+
+        # ── Net PnL ──
+        gross_pnl_pct = (eff_exit - eff_entry) / eff_entry * 100 if eff_entry > 0 else 0.0
+        net_pnl_pct = gross_pnl_pct - cost_pct
+
+        t1_open_pct = (
+            (t1_bar.open - signal_close) / signal_close * 100 if signal_close > 0 else 0.0
+        )
 
         return TradeResult(
             trade_date=trade_date,
@@ -155,10 +195,11 @@ class BacktestEngine:
             signal_score=sig.composite_score,
             risk_level=sig.risk_level.value,
             execution_mode=config.execution_mode.value,
-            entry_price=round(entry_price, 2),
-            exit_price=round(exit_price, 2),
+            entry_price=round(eff_entry, 2),
+            exit_price=round(eff_exit, 2),
             exit_reason=exit_reason,
-            pnl_pct=round(pnl_pct, 2),
+            pnl_pct=round(net_pnl_pct, 2),
+            cost_pct=round(cost_pct, 2),
             t1_open_pct=round(t1_open_pct, 2),
         )
 
@@ -172,7 +213,7 @@ class BacktestEngine:
         is_yizi: bool,
         is_reseal: bool,
     ) -> float | None:
-        """Return entry price, or None if entry is not possible."""
+        """Return raw entry price, or None if entry is not possible."""
         if mode == ExecutionMode.AUCTION:
             if is_yizi:
                 return None
@@ -220,7 +261,7 @@ class BacktestEngine:
         t2_limit: LimitRecord | None,
         config: BacktestConfig,
     ) -> tuple[float, str]:
-        """Return (exit_price, exit_reason)."""
+        """Return (raw_exit_price, exit_reason). Slippage applied by caller."""
         # 1. 一字跌停: can't sell (no buyers)
         is_yizi_down = (
             t2_limit is not None
@@ -283,20 +324,21 @@ def compute_backtest_stats(
     skipped_count = len(skipped)
 
     if traded == 0:
-        skip_summary = _count_skip_reasons(skipped)
         return BacktestStats(
             total_signals=total_signals,
             traded_count=0,
             skipped_count=skipped_count,
             win_count=0, loss_count=0,
             hit_rate=0.0, avg_pnl=0.0, total_pnl=0.0,
+            avg_cost=0.0,
             max_win=0.0, max_loss=0.0,
-            profit_factor=0.0,
+            profit_factor=float("nan"),
             consecutive_losses=0,
-            skip_summary=skip_summary,
+            skip_summary=_count_skip_reasons(skipped),
         )
 
     pnls = [t.pnl_pct for t in trades]
+    costs = [t.cost_pct for t in trades]
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
 
@@ -313,6 +355,7 @@ def compute_backtest_stats(
         hit_rate=len(wins) / traded,
         avg_pnl=sum(pnls) / traded,
         total_pnl=sum(pnls),
+        avg_cost=sum(costs) / traded,
         max_win=max(pnls),
         max_loss=min(pnls),
         profit_factor=round(profit_factor, 2),
@@ -327,7 +370,7 @@ def compute_backtest_stats(
 
 def _stats_by_key(
     trades: list[TradeResult],
-    key_fn,
+    key_fn: Callable[[TradeResult], str],
 ) -> dict[str, BucketStats]:
     buckets: dict[str, list[TradeResult]] = {}
     for t in trades:

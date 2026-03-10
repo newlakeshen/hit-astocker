@@ -5,6 +5,13 @@ Three execution modes (买入方式):
   WEAK_TO_STRONG — 弱转强开盘买 (buy at T+1 open, only if open < T close)
   RE_SEAL        — 回封买 (buy at T+1 limit-up price after board re-seal)
 
+Friction model:
+  滑点 (slippage)        — configurable basis points, applied to entry & exit
+  佣金 (commission)      — 万2.5 per side (A-share standard)
+  印花税 (stamp duty)    — 千0.5 on sell only
+  竞价溢价上限           — skip if T+1 opens too far above T close
+  排板成交率             — skip RE_SEAL if turnover too low (queue can't fill)
+
 Exit logic on T+2 (A-share T+1 settlement):
   STOP_LOSS   — 炸板止损
   TAKE_PROFIT — 冲高兑现
@@ -36,6 +43,8 @@ class SkipReason(str, Enum):
     NO_RESEAL = "NO_RESEAL"
     NO_T1_BAR = "NO_T1_BAR"
     NO_T2_BAR = "NO_T2_BAR"
+    PREMIUM_TOO_HIGH = "PREMIUM_TOO_HIGH"
+    LOW_FILL_RATE = "LOW_FILL_RATE"
 
 
 @dataclass(frozen=True)
@@ -43,11 +52,23 @@ class BacktestConfig:
     execution_mode: ExecutionMode = ExecutionMode.AUCTION
     stop_loss_pct: float = -7.0
     take_profit_pct: float = 5.0
+    # ── friction ──
+    slippage_bps: float = 10.0              # 滑点 (基点), 单边
+    commission_rate: float = 0.00025         # 佣金 (万2.5), 单边
+    stamp_duty_rate: float = 0.0005          # 印花税 (千0.5), 仅卖出
+    max_open_premium_pct: float = 7.0        # 竞价溢价上限 (%), 超过不追
+    min_reseal_turnover: float = 3.0         # 回封最低换手率 (%), 低于则跳过
+
+    def __post_init__(self) -> None:
+        if self.stop_loss_pct >= 0:
+            raise ValueError(f"stop_loss_pct 必须为负数, 当前: {self.stop_loss_pct}")
+        if self.take_profit_pct <= 0:
+            raise ValueError(f"take_profit_pct 必须为正数, 当前: {self.take_profit_pct}")
 
 
 @dataclass(frozen=True)
 class TradeResult:
-    """A single executed trade."""
+    """A single executed trade (net of all friction costs)."""
 
     trade_date: date      # signal date (T)
     entry_date: date      # buy date (T+1)
@@ -58,10 +79,11 @@ class TradeResult:
     signal_score: float
     risk_level: str
     execution_mode: str
-    entry_price: float
-    exit_price: float
+    entry_price: float    # effective entry (after slippage)
+    exit_price: float     # effective exit (after slippage)
     exit_reason: str
-    pnl_pct: float        # (exit - entry) / entry * 100
+    pnl_pct: float        # net PnL after all costs
+    cost_pct: float       # round-trip friction cost as % of entry
     t1_open_pct: float    # T+1 open vs T close (%)
 
 
@@ -108,6 +130,7 @@ class BacktestStats:
     hit_rate: float
     avg_pnl: float
     total_pnl: float
+    avg_cost: float            # mean cost_pct per trade
     max_win: float
     max_loss: float
     profit_factor: float       # gross_profit / |gross_loss|, inf if no loss
