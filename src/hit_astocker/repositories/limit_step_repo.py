@@ -40,6 +40,13 @@ class LimitStepRepository(BaseRepository):
         rows = self._conn.execute(sql, (date_str,)).fetchall()
         return {r["nums"]: r["cnt"] for r in rows}
 
+    def get_stock_heights(self, trade_date: date) -> dict[str, int]:
+        """Get {ts_code: height} mapping for a date."""
+        date_str = trade_date.strftime(TUSHARE_DATE_FMT)
+        sql = "SELECT ts_code, nums FROM limit_step WHERE trade_date = ?"
+        rows = self._conn.execute(sql, (date_str,)).fetchall()
+        return {r["ts_code"]: r["nums"] for r in rows}
+
     @staticmethod
     def _to_model(row: sqlite3.Row) -> ConsecutiveLimitRecord:
         return ConsecutiveLimitRecord(

@@ -15,7 +15,7 @@ from hit_astocker.models.event_data import (
     StockEvent,
     ThemeHeat,
 )
-from hit_astocker.repositories.kpl_repo import KplRepository
+from hit_astocker.repositories.kpl_repo import KplRepository, split_themes
 from hit_astocker.utils.date_utils import get_previous_trading_day, get_recent_trading_days
 
 
@@ -89,9 +89,9 @@ class EventClassifier:
         primary = max(matched_types, key=lambda t: EVENT_WEIGHTS.get(t, 0.0))
         weight = EVENT_WEIGHTS.get(primary, 0.4)
 
-        # Parse themes
+        # Parse themes using shared splitter
         theme_raw = rec.theme or ""
-        themes = tuple(t.strip() for t in theme_raw.split("+") if t.strip())
+        themes = tuple(split_themes(theme_raw))
 
         return StockEvent(
             ts_code=rec.ts_code,
@@ -106,15 +106,12 @@ class EventClassifier:
 
     def _compute_theme_heats(self, trade_date: date, today_records) -> list[ThemeHeat]:
         """Compute theme heat with persistence tracking."""
-        # Parse today's themes
+        # Parse today's themes using shared splitter
         today_themes: dict[str, list[tuple[str, str]]] = {}  # theme -> [(code, name)]
         for rec in today_records:
             if not rec.theme:
                 continue
-            for theme in rec.theme.split("+"):
-                theme = theme.strip()
-                if not theme:
-                    continue
+            for theme in split_themes(rec.theme):
                 if theme not in today_themes:
                     today_themes[theme] = []
                 today_themes[theme].append((rec.ts_code, rec.name))

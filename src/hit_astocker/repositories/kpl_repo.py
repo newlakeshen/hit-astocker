@@ -1,11 +1,30 @@
 """Repository for KPL (开盘啦) list data."""
 
 import sqlite3
+from collections import defaultdict
 from datetime import date, datetime
 
 from hit_astocker.config.constants import TUSHARE_DATE_FMT
 from hit_astocker.models.kpl_data import KplRecord
 from hit_astocker.repositories.base import BaseRepository
+
+# Shared separator used by KPL theme field: "石油石化、天然气"
+THEME_SEPARATORS = ("、",)
+
+
+def split_themes(raw: str) -> list[str]:
+    """Split a KPL theme string into individual themes.
+
+    The Tushare KPL data uses ``、`` as separator.
+    Returns a list of stripped, non-empty theme names.
+    """
+    parts = [raw]
+    for sep in THEME_SEPARATORS:
+        new_parts: list[str] = []
+        for p in parts:
+            new_parts.extend(p.split(sep))
+        parts = new_parts
+    return [t.strip() for t in parts if t.strip()]
 
 
 class KplRepository(BaseRepository):
@@ -24,33 +43,39 @@ class KplRepository(BaseRepository):
         return [self._to_model(r) for r in rows]
 
     def get_themes_by_date(self, trade_date: date) -> dict[str, int]:
-        """Get theme counts for a date."""
+        """Get per-theme stock counts for a date (themes are split)."""
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         sql = """
-            SELECT theme, COUNT(*) as cnt
-            FROM kpl_list WHERE trade_date = ? AND tag = '涨停' AND theme != ''
-            GROUP BY theme ORDER BY cnt DESC
+            SELECT theme FROM kpl_list
+            WHERE trade_date = ? AND tag = '涨停' AND theme != ''
         """
         rows = self._conn.execute(sql, (date_str,)).fetchall()
-        return {r["theme"]: r["cnt"] for r in rows}
+        counts: dict[str, int] = defaultdict(int)
+        for r in rows:
+            for t in split_themes(r["theme"]):
+                counts[t] += 1
+        return dict(counts)
 
     def get_themes_by_dates(self, trade_dates: list[date]) -> dict[str, int]:
-        """Get theme day-counts across multiple dates in one query.
+        """Get theme day-counts across multiple dates (themes are split).
 
-        Returns {theme: number_of_days_it_appeared}.
+        Returns {theme: number_of_distinct_days_it_appeared}.
         """
         if not trade_dates:
             return {}
         date_strs = [d.strftime(TUSHARE_DATE_FMT) for d in trade_dates]
         placeholders = ",".join("?" * len(date_strs))
         sql = f"""
-            SELECT theme, COUNT(DISTINCT trade_date) as day_cnt
-            FROM kpl_list
+            SELECT trade_date, theme FROM kpl_list
             WHERE trade_date IN ({placeholders}) AND tag = '涨停' AND theme != ''
-            GROUP BY theme
         """
         rows = self._conn.execute(sql, date_strs).fetchall()
-        return {r["theme"]: r["day_cnt"] for r in rows}
+        # theme -> set of dates it appeared
+        theme_dates: dict[str, set[str]] = defaultdict(set)
+        for r in rows:
+            for t in split_themes(r["theme"]):
+                theme_dates[t].add(r["trade_date"])
+        return {t: len(dates) for t, dates in theme_dates.items()}
 
     @staticmethod
     def _to_model(row: sqlite3.Row) -> KplRecord:

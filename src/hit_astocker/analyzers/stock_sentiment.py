@@ -19,7 +19,7 @@ from hit_astocker.analyzers.technical_form import TechnicalFormAnalyzer
 from hit_astocker.models.event_data import StockSentimentScore
 from hit_astocker.repositories.daily_bar_repo import DailyBarRepository
 from hit_astocker.repositories.hsgt_repo import HsgtTop10Repository
-from hit_astocker.repositories.kpl_repo import KplRepository
+from hit_astocker.repositories.kpl_repo import KplRepository, split_themes
 from hit_astocker.repositories.ths_hot_repo import ThsHotRepository
 
 
@@ -193,7 +193,7 @@ class StockSentimentAnalyzer:
         if not kpl or not kpl.theme:
             return 30.0
 
-        themes = [t.strip() for t in kpl.theme.split("+") if t.strip()]
+        themes = split_themes(kpl.theme)
         if not themes:
             return 30.0
 

@@ -8,7 +8,7 @@ import sqlite3
 from datetime import date
 
 from hit_astocker.models.sector import SectorRotationResult, SectorStrength
-from hit_astocker.repositories.kpl_repo import KplRepository
+from hit_astocker.repositories.kpl_repo import KplRepository, split_themes
 from hit_astocker.repositories.sector_repo import SectorRepository
 from hit_astocker.utils.date_utils import get_previous_trading_day
 
@@ -56,8 +56,7 @@ class SectorRotationAnalyzer:
         theme_to_codes: dict[str, list[str]] = {}
         for rec in kpl_records:
             if rec.theme:
-                for theme in rec.theme.split("+"):
-                    theme = theme.strip()
+                for theme in split_themes(rec.theme):
                     if theme not in theme_to_codes:
                         theme_to_codes[theme] = []
                     theme_to_codes[theme].append(rec.ts_code)

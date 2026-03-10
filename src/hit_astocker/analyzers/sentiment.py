@@ -98,24 +98,30 @@ class SentimentAnalyzer:
         )
 
     def _compute_promotion_rate(self, trade_date: date) -> float:
-        """Compute promotion rate: stocks advancing from N to N+1 board."""
+        """Compute promotion rate by tracking individual stocks.
+
+        For each stock at height N yesterday, check if the **same stock**
+        is at height N+1 today.  This replaces the old aggregate-count
+        approximation which was inaccurate when stocks enter / exit the
+        consecutive-board ladder.
+        """
         prev_date = get_previous_trading_day(trade_date)
         if prev_date is None:
             return 0.0
 
-        today_counts = self._step_repo.get_height_counts(trade_date)
-        yesterday_counts = self._step_repo.get_height_counts(prev_date)
-
-        if not yesterday_counts:
+        yesterday_heights = self._step_repo.get_stock_heights(prev_date)
+        if not yesterday_heights:
             return 0.0
 
-        promoted = 0
-        total_candidates = 0
-        for height, count in yesterday_counts.items():
-            total_candidates += count
-            promoted += today_counts.get(height + 1, 0)
+        today_heights = self._step_repo.get_stock_heights(trade_date)
 
-        return promoted / max(total_candidates, 1)
+        promoted = sum(
+            1
+            for code, prev_h in yesterday_heights.items()
+            if today_heights.get(code) == prev_h + 1
+        )
+
+        return promoted / len(yesterday_heights)
 
     def _determine_risk(self, score: float, broken_rate: float) -> str:
         s = self._settings
