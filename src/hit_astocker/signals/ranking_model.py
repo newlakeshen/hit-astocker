@@ -6,34 +6,46 @@ Supports two model types:
 
 Training data: historical factor vectors + T+1 return labels.
 Inference: predict_proba → probability of profitable trade → ranking score.
+
+Security: model files are verified with HMAC-SHA256 checksum before loading.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import pickle
 from pathlib import Path
+from typing import Any
 
 from hit_astocker.signals.feature_builder import ALL_COLUMNS, FACTOR_COLUMNS
 
 logger = logging.getLogger(__name__)
+
+# HMAC key for model file integrity verification (not a secret — just tamper detection)
+_MODEL_HMAC_KEY = b"hit-astocker-ranking-model-v1"
 
 
 class RankingModel:
     """ML ranking model wrapper with train/predict/save/load."""
 
     def __init__(self, model_type: str = "logistic"):
-        self._model = None
-        self._scaler = None
+        self._model: Any = None
+        self._scaler: Any = None
         self._model_type = model_type
 
-    def train(self, X: list[list[float]], y: list[int]) -> dict[str, float]:
+    def train(
+        self,
+        features: list[list[float]],  # noqa: N803
+        labels: list[int],
+    ) -> dict[str, float | int | str]:
         """Train the model and return evaluation metrics.
 
         Parameters
         ----------
-        X : feature matrix (list of feature vectors)
-        y : binary labels (1=profitable, 0=not)
+        features : feature matrix (list of feature vectors)
+        labels : binary labels (1=profitable, 0=not)
 
         Returns
         -------
@@ -49,12 +61,12 @@ class RankingModel:
                 "pip install 'hit-astocker[ml]'"
             ) from None
 
-        X_arr = np.array(X, dtype=np.float64)
-        y_arr = np.array(y, dtype=np.int32)
+        x_arr = np.array(features, dtype=np.float64)
+        y_arr = np.array(labels, dtype=np.int32)
 
         # Scale features
         self._scaler = StandardScaler()
-        X_scaled = self._scaler.fit_transform(X_arr)
+        x_scaled = self._scaler.fit_transform(x_arr)
 
         # Build model
         if self._model_type == "gbdt":
@@ -78,16 +90,16 @@ class RankingModel:
         # Cross-validation
         n_splits = min(5, max(2, len(y_arr) // 50))
         auc_scores = cross_val_score(
-            self._model, X_scaled, y_arr,
+            self._model, x_scaled, y_arr,
             cv=n_splits, scoring="roc_auc",
         )
         acc_scores = cross_val_score(
-            self._model, X_scaled, y_arr,
+            self._model, x_scaled, y_arr,
             cv=n_splits, scoring="accuracy",
         )
 
         # Final fit on all data
-        self._model.fit(X_scaled, y_arr)
+        self._model.fit(x_scaled, y_arr)
 
         return {
             "model_type": self._model_type,
@@ -100,7 +112,7 @@ class RankingModel:
             "cv_folds": n_splits,
         }
 
-    def predict_proba(self, X: list[list[float]]) -> list[float]:
+    def predict_proba(self, features: list[list[float]]) -> list[float]:
         """Return P(profitable) for each candidate.
 
         Returns list of probabilities (0-1), same order as input.
@@ -110,13 +122,13 @@ class RankingModel:
         if not self.is_trained:
             raise RuntimeError("Model not trained or loaded")
 
-        X_arr = np.array(X, dtype=np.float64)
-        X_scaled = self._scaler.transform(X_arr)
-        proba = self._model.predict_proba(X_scaled)[:, 1]
+        x_arr = np.array(features, dtype=np.float64)
+        x_scaled = self._scaler.transform(x_arr)
+        proba = self._model.predict_proba(x_scaled)[:, 1]
         return proba.tolist()
 
     def save(self, path: Path) -> None:
-        """Save trained model to disk."""
+        """Save trained model + HMAC checksum to disk."""
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "model": self._model,
@@ -124,24 +136,59 @@ class RankingModel:
             "model_type": self._model_type,
             "feature_columns": list(ALL_COLUMNS),
         }
+        raw = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
+
+        # Write model file
         with open(path, "wb") as f:
-            pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
-        logger.info("Model saved to %s", path)
+            f.write(raw)
+
+        # Write HMAC sidecar for integrity verification
+        digest = hmac.new(_MODEL_HMAC_KEY, raw, hashlib.sha256).hexdigest()
+        path.with_suffix(".sha256").write_text(digest)
+
+        logger.info("Model saved to %s (with .sha256 checksum)", path)
 
     def load(self, path: Path) -> bool:
-        """Load model from disk. Returns True if successful."""
+        """Load model from disk with HMAC integrity verification.
+
+        Returns True if successful, False if file not found or verification fails.
+        """
         try:
-            with open(path, "rb") as f:
-                data = pickle.load(f)  # noqa: S301
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            return False
+        except OSError:
+            logger.warning("Failed to read model file %s", path, exc_info=True)
+            return False
+
+        # Verify HMAC checksum
+        checksum_path = path.with_suffix(".sha256")
+        if checksum_path.exists():
+            expected = checksum_path.read_text().strip()
+            actual = hmac.new(_MODEL_HMAC_KEY, raw, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(expected, actual):
+                logger.error(
+                    "Model file integrity check FAILED for %s — "
+                    "file may be corrupted or tampered with",
+                    path,
+                )
+                return False
+        else:
+            logger.warning(
+                "No checksum file found for %s — skipping integrity check. "
+                "Re-run 'train' to generate a verified model.",
+                path,
+            )
+
+        try:
+            data = pickle.loads(raw)  # noqa: S301
             self._model = data["model"]
             self._scaler = data["scaler"]
             self._model_type = data.get("model_type", "logistic")
             logger.info("Model loaded from %s (type=%s)", path, self._model_type)
             return True
-        except FileNotFoundError:
-            return False
         except Exception:
-            logger.warning("Failed to load model from %s", path, exc_info=True)
+            logger.warning("Failed to deserialize model from %s", path, exc_info=True)
             return False
 
     @property

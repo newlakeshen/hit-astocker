@@ -1,5 +1,6 @@
 """Event-driven and sentiment data models."""
 
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -279,8 +280,6 @@ def compute_event_weight(
     -------
     float : 动态权重 (0-1), 已乘以衰减
     """
-    import math
-
     base = EVENT_BASE_STRENGTH.get(event_type, 0.40)
 
     # ── 1. 事件级别 (grade) ──

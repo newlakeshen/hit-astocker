@@ -10,6 +10,7 @@ Pipeline:
   4. Save model + print evaluation metrics + feature importance
 """
 
+import logging
 from datetime import date
 from pathlib import Path
 
@@ -24,8 +25,33 @@ from hit_astocker.database.migrations import ensure_schema
 from hit_astocker.renderers.theme import APP_THEME
 from hit_astocker.utils.date_utils import from_tushare_date, get_trading_days_between
 
+logger = logging.getLogger(__name__)
+
 train_app = typer.Typer(name="train", help="Train ML ranking model")
 console = Console(theme=APP_THEME)
+
+# ── Feature label mapping (module-level constant) ──
+_FEATURE_LABELS: dict[str, str] = {
+    "sentiment": "市场情绪",
+    "sector": "板块热度",
+    "capital_flow": "资金流向",
+    "dragon_tiger": "游资席位",
+    "event_catalyst": "事件催化",
+    "stock_sentiment": "个股情绪",
+    "northbound": "北向资金",
+    "technical_form": "技术形态",
+    "seal_quality": "封板质量",
+    "survival": "晋级率",
+    "height_momentum": "高度动能",
+    "theme_heat": "题材热度",
+    "leader_position": "龙头地位",
+    "cycle_phase": "情绪周期",
+    "sig_first_board": "首板信号",
+    "sig_follow_board": "连板信号",
+    "sig_sector_leader": "龙头信号",
+    "has_northbound_data": "有北向数据",
+    "has_technical_data": "有技术数据",
+}
 
 
 @train_app.callback(invoke_without_command=True)
@@ -51,11 +77,13 @@ def train(
         console.print()
 
         # ── 1. Collect training data ──
-        X, y, meta = _collect_training_data(conn, settings, start_date, end_date)
+        features, labels, meta = _collect_training_data(
+            conn, settings, start_date, end_date,
+        )
 
-        if len(X) < min_samples:
+        if len(features) < min_samples:
             console.print(
-                f"[red]  样本不足: {len(X)} < {min_samples}[/]\n"
+                f"[red]  样本不足: {len(features)} < {min_samples}[/]\n"
                 "  请扩大训练区间或先运行 sync 补充数据。"
             )
             raise typer.Exit(1)
@@ -64,10 +92,11 @@ def train(
         from hit_astocker.signals.ranking_model import RankingModel
 
         model = RankingModel(model_type=model_type)
-        console.print(f"  训练样本: {len(X)} (正样本 {sum(y)}, 负样本 {len(y) - sum(y)})")
+        pos = sum(labels)
+        console.print(f"  训练样本: {len(features)} (正样本 {pos}, 负样本 {len(labels) - pos})")
         console.print("  训练中...")
 
-        metrics = model.train(X, y)
+        metrics = model.train(features, labels)
 
         # ── 3. Save model ──
         model_path = Path(settings.db_path).parent / "ranking_model.pkl"
@@ -101,8 +130,8 @@ def _collect_training_data(
     scorer = CompositeScorer(settings)
 
     trading_days = get_trading_days_between(start_date, end_date)
-    X: list[list[float]] = []
-    y: list[int] = []
+    features: list[list[float]] = []
+    labels: list[int] = []
     meta = {"days_processed": 0, "days_skipped": 0, "total_days": len(trading_days)}
 
     with console.status("  收集训练数据...") as status:
@@ -139,9 +168,14 @@ def _collect_training_data(
                     continue
 
                 # Batch-load T and T+1 bars for labeling
-                codes = [c.ts_code for c in scored]
-                t_bars = {b.ts_code: b for b in bar_repo.find_records_by_date(td)}
-                t1_bars = {b.ts_code: b for b in bar_repo.find_records_by_date(next_td)}
+                t_bars = {
+                    b.ts_code: b
+                    for b in bar_repo.find_records_by_date(td)
+                }
+                t1_bars = {
+                    b.ts_code: b
+                    for b in bar_repo.find_records_by_date(next_td)
+                }
 
                 for c in scored:
                     t_bar = t_bars.get(c.ts_code)
@@ -152,20 +186,21 @@ def _collect_training_data(
                     # Label: T+1 close > T close → profitable (1), else (0)
                     label = 1 if t1_bar.close > t_bar.close else 0
 
-                    features = build_feature_vector(
+                    vec = build_feature_vector(
                         c.factors, c.signal_type,
                         ctx.sentiment_cycle, ctx.coverage,
                     )
-                    X.append(features)
-                    y.append(label)
+                    features.append(vec)
+                    labels.append(label)
 
                 meta["days_processed"] += 1
 
             except Exception:
+                logger.warning("Training: failed to process %s", td, exc_info=True)
                 meta["days_skipped"] += 1
                 continue
 
-    return X, y, meta
+    return features, labels, meta
 
 
 def _display_metrics(metrics: dict) -> None:
@@ -174,7 +209,7 @@ def _display_metrics(metrics: dict) -> None:
     table.add_column("指标", style="cyan")
     table.add_column("值", style="bold")
 
-    table.add_row("模型类型", metrics["model_type"])
+    table.add_row("模型类型", str(metrics["model_type"]))
     table.add_row("训练样本", str(metrics["n_samples"]))
     table.add_row("正样本率", f"{metrics['positive_rate']:.1%}")
     table.add_row(
@@ -207,28 +242,6 @@ def _display_feature_importance(model) -> None:
     table.add_column("特征", style="cyan")
     table.add_column("重要性", style="bold", justify="right")
     table.add_column("方向", justify="center")
-
-    _FEATURE_LABELS = {
-        "sentiment": "市场情绪",
-        "sector": "板块热度",
-        "capital_flow": "资金流向",
-        "dragon_tiger": "游资席位",
-        "event_catalyst": "事件催化",
-        "stock_sentiment": "个股情绪",
-        "northbound": "北向资金",
-        "technical_form": "技术形态",
-        "seal_quality": "封板质量",
-        "survival": "晋级率",
-        "height_momentum": "高度动能",
-        "theme_heat": "题材热度",
-        "leader_position": "龙头地位",
-        "cycle_phase": "情绪周期",
-        "sig_first_board": "首板信号",
-        "sig_follow_board": "连板信号",
-        "sig_sector_leader": "龙头信号",
-        "has_northbound_data": "有北向数据",
-        "has_technical_data": "有技术数据",
-    }
 
     for feat, imp in top:
         label = _FEATURE_LABELS.get(feat, feat)

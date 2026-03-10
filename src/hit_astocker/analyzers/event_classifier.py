@@ -128,7 +128,10 @@ class EventClassifier:
         for ev in stock_events:
             distribution[ev.event_type] = distribution.get(ev.event_type, 0) + 1
 
-        dominant = max(distribution, key=distribution.get) if distribution else EventType.UNKNOWN
+        if distribution:
+            dominant = max(distribution, key=lambda k: distribution[k])
+        else:
+            dominant = EventType.UNKNOWN
 
         # 3. Layer distribution (how many classified by each layer)
         layer_dist: dict[str, int] = {}
@@ -332,7 +335,7 @@ class EventClassifier:
         return EventType.UNKNOWN
 
     @staticmethod
-    def _classify_from_concepts(concepts: list[str]) -> str:
+    def _classify_from_concepts(concepts: tuple[str, ...] | list[str]) -> str:
         """L2: Classify event type from concept membership."""
         for concept in concepts:
             # Policy concepts
@@ -615,7 +618,10 @@ class EventClassifier:
             cpt_pct = layer_dist.get("CONCEPT", 0) / total * 100
             kw_pct = layer_dist.get("KEYWORD", 0) / total * 100
             unknown_count = distribution.get(EventType.UNKNOWN, 0)
-            parts.append(f"识别: 公告{ann_pct:.0f}% 概念{cpt_pct:.0f}% 关键词{kw_pct:.0f}% 未知{unknown_count}")
+            parts.append(
+                f"识别: 公告{ann_pct:.0f}% 概念{cpt_pct:.0f}%"
+                f" 关键词{kw_pct:.0f}% 未知{unknown_count}"
+            )
 
         if theme_heats:
             top3 = sum(th.today_count for th in theme_heats[:3])
