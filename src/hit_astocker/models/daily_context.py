@@ -74,9 +74,15 @@ class DailyAnalysisContext:
 def table_has_data(conn: sqlite3.Connection, table: str) -> bool:
     """Check if a table exists and has at least one row."""
     try:
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if not exists:
+            return False
         row = conn.execute(f"SELECT 1 FROM [{table}] LIMIT 1").fetchone()  # noqa: S608
         return row is not None
-    except Exception:
+    except sqlite3.OperationalError:
         return False
 
 

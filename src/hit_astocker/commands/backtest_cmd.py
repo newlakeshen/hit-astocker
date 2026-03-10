@@ -23,7 +23,7 @@ from hit_astocker.analyzers.backtest_engine import BacktestEngine, compute_backt
 from hit_astocker.config.settings import get_settings
 from hit_astocker.database.connection import get_connection
 from hit_astocker.database.migrations import ensure_schema
-from hit_astocker.models.daily_context import DataCoverage, table_has_data
+from hit_astocker.models.daily_context import DataCoverage, build_daily_context, table_has_data
 from hit_astocker.models.backtest import (
     BacktestConfig,
     BacktestStats,
@@ -145,7 +145,8 @@ def backtest(
 
         for d in trading_dates:
             try:
-                signals = generator.generate(d)
+                ctx = build_daily_context(conn, settings, d)
+                signals = generator.generate_from_context(ctx)
             except Exception as exc:
                 logger.warning("信号生成失败 [%s]: %s", d, exc)
                 continue

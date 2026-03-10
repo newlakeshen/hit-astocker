@@ -86,9 +86,10 @@ class StockSentimentAnalyzer:
         codes = ts_codes if ts_codes else list(kpl_map.keys())
 
         # Batch load: THS hot rankings
-        ths_hot_map: dict = {}
-        for rec in self._ths_hot_repo.find_records_by_date(trade_date):
-            ths_hot_map[rec.ts_code] = rec
+        ths_hot_map = {
+            rec.ts_code: rec
+            for rec in self._ths_hot_repo.find_records_by_date(trade_date)
+        }
 
         # Batch load: Northbound capital net buyers
         hsgt_net_map = self._hsgt_repo.find_net_buyers_by_date(trade_date)

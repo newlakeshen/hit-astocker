@@ -136,10 +136,8 @@ class CompositeScorer:
                     # Leaders of hot themes → full sector score
                     raw["sector"] = 100.0
                     # Boost event_catalyst with theme heat
-                    ec = raw.get("event_catalyst")
-                    raw["event_catalyst"] = max(
-                        ec if ec is not None else 0.0, th.heat_score,
-                    )
+                    ec = raw["event_catalyst"]  # always float from _common_factors
+                    raw["event_catalyst"] = max(ec, th.heat_score)
 
                     weights = _sl_weights(s)
                     composite = _weighted_sum(raw, weights)
@@ -163,9 +161,27 @@ class _SharedMaps:
         "coverage",
     )
 
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+    def __init__(
+        self,
+        sentiment: SentimentScore,
+        sector_names: set[str],
+        moneyflow_map: dict[str, MoneyFlowResult],
+        dragon: DragonTigerResult,
+        event_map: dict[str, object],
+        sentiment_map: dict[str, StockSentimentScore],
+        northbound_map: dict[str, float],
+        survival_model: SurvivalModel | None,
+        coverage: DataCoverage | None,
+    ) -> None:
+        self.sentiment = sentiment
+        self.sector_names = sector_names
+        self.moneyflow_map = moneyflow_map
+        self.dragon = dragon
+        self.event_map = event_map
+        self.sentiment_map = sentiment_map
+        self.northbound_map = northbound_map
+        self.survival_model = survival_model
+        self.coverage = coverage
 
 
 # ── common factor computation ─────────────────────────────────────────
