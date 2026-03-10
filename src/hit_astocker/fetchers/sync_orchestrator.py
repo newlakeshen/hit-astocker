@@ -118,14 +118,27 @@ class SyncOrchestrator:
         self._conn.commit()
         return results
 
+    def ensure_trade_calendar(self) -> None:
+        """Sync trade_cal from Tushare if table is empty, then init singleton."""
+        from hit_astocker.fetchers.trade_cal_fetcher import sync_trade_calendar
+        from hit_astocker.utils.trade_calendar import init_trade_calendar
+
+        row = self._conn.execute("SELECT COUNT(*) FROM trade_cal").fetchone()
+        if row[0] == 0:
+            logger.info("trade_cal table empty — fetching from Tushare")
+            sync_trade_calendar(self._client, self._conn)
+        init_trade_calendar(self._conn)
+
     def sync_date_range(self, start: date, end: date) -> dict[str, dict[str, int]]:
-        """Sync all APIs for a date range."""
-        from hit_astocker.utils.date_utils import date_range
+        """Sync all APIs for a date range (real trading days only)."""
+        self.ensure_trade_calendar()
+        from hit_astocker.utils.trade_calendar import get_trade_calendar
+
+        cal = get_trade_calendar()
+        trading_dates = cal.get_trading_days_between(start, end)
 
         all_results = {}
-        for d in date_range(start, end):
-            if d.weekday() >= 5:  # Skip weekends
-                continue
+        for d in trading_dates:
             logger.info("Syncing date: %s", d)
             all_results[to_tushare_date(d)] = self.sync_date(d)
         return all_results

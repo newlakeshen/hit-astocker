@@ -36,6 +36,9 @@ def sync(
         ensure_schema(conn)
         orchestrator = SyncOrchestrator(settings, conn)
 
+        # Ensure trade calendar is populated (fetches from Tushare if empty)
+        orchestrator.ensure_trade_calendar()
+
         if start and end:
             start_date = from_tushare_date(start)
             end_date = from_tushare_date(end)

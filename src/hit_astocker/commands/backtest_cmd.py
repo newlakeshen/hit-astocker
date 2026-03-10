@@ -12,7 +12,7 @@ from hit_astocker.database.migrations import ensure_schema
 from hit_astocker.models.validation import SignalValidation, ValidationStats
 from hit_astocker.renderers.theme import APP_THEME, pct_color, risk_color, score_color
 from hit_astocker.signals.signal_generator import SignalGenerator
-from hit_astocker.utils.date_utils import date_range, from_tushare_date, get_previous_trading_day
+from hit_astocker.utils.date_utils import from_tushare_date, get_next_trading_day, get_trading_days_between
 
 backtest_app = typer.Typer(name="backtest", help="Historical signal backtesting with T+1 validation")
 console = Console(theme=APP_THEME)
@@ -37,7 +37,7 @@ def backtest(
         all_signals = []
         all_validations: list[SignalValidation] = []
 
-        trading_dates = [d for d in date_range(start_date, end_date) if d.weekday() < 5]
+        trading_dates = get_trading_days_between(start_date, end_date)
 
         for i, d in enumerate(trading_dates):
             try:
@@ -52,8 +52,7 @@ def backtest(
             # T+1 validation: find next trading day
             next_d = trading_dates[i + 1] if i + 1 < len(trading_dates) else None
             if next_d is None:
-                # Try to compute next trading day beyond the range
-                next_d = _next_trading_day(d)
+                next_d = get_next_trading_day(d)
 
             if next_d:
                 validations = validator.validate_signals(signals, next_d)
@@ -80,15 +79,6 @@ def backtest(
         # Per-signal detail (optional)
         if detail and all_validations:
             _render_detail(all_validations)
-
-
-def _next_trading_day(d):
-    """Simple heuristic: next weekday after d."""
-    from datetime import timedelta
-    nxt = d + timedelta(days=1)
-    while nxt.weekday() >= 5:
-        nxt += timedelta(days=1)
-    return nxt
 
 
 def _render_summary(stats: ValidationStats, start: str, end: str) -> None:

@@ -290,6 +290,12 @@ TABLES = {
             PRIMARY KEY (trade_date, ts_code)
         )
     """,
+    "trade_cal": """
+        CREATE TABLE IF NOT EXISTS trade_cal (
+            cal_date TEXT NOT NULL PRIMARY KEY,
+            is_open INTEGER NOT NULL DEFAULT 0
+        )
+    """,
     "sync_log": """
         CREATE TABLE IF NOT EXISTS sync_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -331,6 +337,7 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_hsgt_top10_code_date ON hsgt_top10(ts_code, trade_date)",
     "CREATE INDEX IF NOT EXISTS idx_stk_factor_date ON stk_factor_pro(trade_date)",
     "CREATE INDEX IF NOT EXISTS idx_stk_factor_code_date ON stk_factor_pro(ts_code, trade_date DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_trade_cal_open ON trade_cal(is_open, cal_date)",
 ]
 
 

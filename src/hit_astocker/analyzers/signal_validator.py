@@ -15,7 +15,6 @@ from hit_astocker.models.validation import (
     ValidationStats,
 )
 from hit_astocker.repositories.daily_bar_repo import DailyBarRepository
-from hit_astocker.utils.date_utils import get_previous_trading_day
 
 
 class SignalValidator:

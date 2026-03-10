@@ -1,4 +1,9 @@
-"""Date utility functions."""
+"""Date utility functions.
+
+All trading-day logic delegates to the global TradeCalendar singleton
+(initialised via ``init_trade_calendar(conn)``).  The old weekday-only
+heuristic has been removed so that A-share holidays are handled correctly.
+"""
 
 from datetime import date, datetime, timedelta
 
@@ -14,33 +19,48 @@ def from_tushare_date(s: str) -> date:
 
 
 def date_range(start: date, end: date) -> list[date]:
-    """Generate list of dates from start to end (inclusive)."""
+    """Generate list of calendar dates from start to end (inclusive)."""
     days = (end - start).days
     return [start + timedelta(days=i) for i in range(days + 1)]
 
 
 def get_previous_trading_day(d: date, trading_days: set[date] | None = None) -> date | None:
-    """Get the previous trading day. Uses simple weekday heuristic if no calendar provided."""
+    """Get the previous trading day before *d*.
+
+    If *trading_days* is provided explicitly it is used (legacy compat);
+    otherwise the global TradeCalendar is consulted.
+    """
     if trading_days:
-        candidates = sorted([td for td in trading_days if td < d], reverse=True)
-        return candidates[0] if candidates else None
-    # Simple heuristic: skip weekends
-    prev = d - timedelta(days=1)
-    while prev.weekday() >= 5:  # Saturday=5, Sunday=6
-        prev -= timedelta(days=1)
-    return prev
+        # Legacy path: caller supplied an explicit set
+        from bisect import bisect_left
+        sorted_days = sorted(trading_days)
+        idx = bisect_left(sorted_days, d)
+        return sorted_days[idx - 1] if idx > 0 else None
+
+    from hit_astocker.utils.trade_calendar import get_trade_calendar
+    return get_trade_calendar().get_previous(d)
+
+
+def get_next_trading_day(d: date) -> date | None:
+    """Get the next trading day after *d*."""
+    from hit_astocker.utils.trade_calendar import get_trade_calendar
+    return get_trade_calendar().get_next(d)
 
 
 def get_recent_trading_days(d: date, count: int, trading_days: set[date] | None = None) -> list[date]:
-    """Get the most recent N trading days before d."""
-    result = []
-    current = d
-    for _ in range(count * 2):  # Over-iterate to handle weekends/holidays
-        prev = get_previous_trading_day(current, trading_days)
-        if prev is None:
-            break
-        result.append(prev)
-        current = prev
-        if len(result) >= count:
-            break
-    return result
+    """Get the most recent N trading days before *d* (newest first)."""
+    if trading_days:
+        from bisect import bisect_left
+        sorted_days = sorted(trading_days)
+        idx = bisect_left(sorted_days, d)
+        start = max(0, idx - count)
+        return list(reversed(sorted_days[start:idx]))
+
+    from hit_astocker.utils.trade_calendar import get_trade_calendar
+    return get_trade_calendar().get_recent(d, count)
+
+
+def get_trading_days_between(start: date, end: date) -> list[date]:
+    """Return sorted trading days in [start, end] inclusive."""
+    from hit_astocker.utils.trade_calendar import get_trade_calendar
+    return get_trade_calendar().get_trading_days_between(start, end)

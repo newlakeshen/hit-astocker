@@ -4,7 +4,7 @@ import sqlite3
 
 from hit_astocker.database.schema import init_schema
 
-CURRENT_VERSION = 4
+CURRENT_VERSION = 5
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -26,3 +26,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             (CURRENT_VERSION,),
         )
         conn.commit()
+
+    # Always initialise the trade calendar singleton from DB
+    from hit_astocker.utils.trade_calendar import init_trade_calendar
+    init_trade_calendar(conn)
