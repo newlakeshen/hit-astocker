@@ -29,6 +29,41 @@ class StockFactorRepository(BaseRepository):
         rows = self._conn.execute(sql, (ts_code, date_str, count)).fetchall()
         return [self._to_model(r) for r in reversed(rows)]
 
+    def find_recent_batch(
+        self, ts_codes: list[str], trade_date: date, count: int = 3
+    ) -> dict[str, list[StockFactorRecord]]:
+        """Batch load recent factor data for multiple stocks in one query.
+
+        Returns {ts_code: [records oldest→newest]}.
+        """
+        if not ts_codes:
+            return {}
+        date_str = trade_date.strftime(TUSHARE_DATE_FMT)
+        placeholders = ",".join("?" * len(ts_codes))
+        sql = f"""
+            SELECT trade_date, ts_code, "close",
+                   macd_dif, macd_dea, macd,
+                   kdj_k, kdj_d, kdj_j,
+                   rsi_6, rsi_12,
+                   boll_upper, boll_mid, boll_lower
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY ts_code ORDER BY trade_date DESC
+                ) AS rn
+                FROM stk_factor_pro
+                WHERE ts_code IN ({placeholders}) AND trade_date <= ?
+            ) WHERE rn <= ?
+            ORDER BY ts_code, trade_date
+        """
+        params = [*ts_codes, date_str, count]
+        rows = self._conn.execute(sql, params).fetchall()
+
+        result: dict[str, list[StockFactorRecord]] = {}
+        for r in rows:
+            rec = self._to_model(r)
+            result.setdefault(rec.ts_code, []).append(rec)
+        return result
+
     @staticmethod
     def _to_model(row: sqlite3.Row) -> StockFactorRecord:
         return StockFactorRecord(

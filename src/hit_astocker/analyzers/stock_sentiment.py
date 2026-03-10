@@ -54,17 +54,22 @@ class StockSentimentAnalyzer:
         # Batch load: Northbound capital net buyers
         hsgt_net_map = self._hsgt_repo.find_net_buyers_by_date(trade_date)
 
-        # Batch load: Technical form scores
+        # Batch load: Technical form scores (already uses batch internally)
         tech_scores = self._technical_analyzer.analyze(trade_date, codes)
         tech_map = {ts.ts_code: ts for ts in tech_scores}
+
+        # Batch load: Recent daily bars for volume ratio (replaces N+1)
+        bars_map = self._bar_repo.find_recent_bars_batch(codes, trade_date, count=6)
 
         results = []
         for ts_code in codes:
             kpl = kpl_map.get(ts_code)
             event = event_map.get(ts_code)
 
-            # Original 5 factors
-            volume_ratio_score = self._score_volume_ratio(ts_code, trade_date)
+            # Volume ratio from pre-loaded bars (no per-stock query)
+            volume_ratio_score = self._score_volume_ratio_from_bars(
+                bars_map.get(ts_code, []), trade_date
+            )
             seal_score = self._score_seal_order(kpl)
             bid_score = self._score_bid_activity(kpl)
             theme_score = self._score_theme_heat(kpl, theme_heat_map)
@@ -116,9 +121,9 @@ class StockSentimentAnalyzer:
 
         return sorted(results, key=lambda s: s.composite_score, reverse=True)
 
-    def _score_volume_ratio(self, ts_code: str, trade_date: date) -> float:
-        """Score based on today's volume relative to 5-day average."""
-        bars = self._bar_repo.find_recent_bars(ts_code, trade_date, count=6)
+    @staticmethod
+    def _score_volume_ratio_from_bars(bars: list, trade_date: date) -> float:
+        """Score volume ratio from pre-loaded bar data."""
         if len(bars) < 2:
             return 50.0
 

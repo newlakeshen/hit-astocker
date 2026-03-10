@@ -15,9 +15,9 @@ A股打板量化分析系统 (A-Share Limit-Up Board Hitting Quantitative Analys
 ## Architecture
 
 ```
-CLI (Typer) -> Commands -> Analyzers -> Repositories -> SQLite
-                            |
-                       Signal Generator
+CLI (Typer) -> Commands -> Analyzers -> Repositories -> SQLite (WAL mode)
+                            |               |
+                       Signal Generator     Batch queries (no N+1)
                        ├── CompositeScorer (10-factor weighted scoring)
                        ├── RiskAssessor (dynamic thresholds via market context)
                        ├── EventClassifier (事件驱动分类)
@@ -27,6 +27,12 @@ CLI (Typer) -> Commands -> Analyzers -> Repositories -> SQLite
                        └── HsgtTop10Repository (北向资金)
                             |
                     Rich Terminal Output
+
+Concurrency model:
+- SQLite in WAL mode + check_same_thread=False for concurrent reads
+- SignalGenerator: Phase1 parallel (8 independent analyzers) → Phase2 parallel (2 dependent)
+- SyncOrchestrator: parallel HTTP fetches (4 workers) → sequential DB writes
+- daily_cmd: 6 analyzers parallel, then SignalGenerator sequential (avoid nested pools)
 ```
 
 ## Key Modules
@@ -104,6 +110,15 @@ hit-astocker firstboard / lianban / sector / dragon / flow / predict
 - Computes P(height N+1 | height N) for each board height
 - Replaces crude fixed lianban_position scoring with statistical probabilities
 
+## Performance Constraints
+
+- **No N+1 queries**: Always use batch methods (`find_recent_bars_batch`, `find_recent_batch`, `find_by_codes`, `get_themes_by_dates`) when loading data for multiple stocks
+- **Composite indexes**: `(ts_code, trade_date DESC)` on `daily_bar`, `stk_factor_pro`, `hsgt_top10`; `(trade_date, tag)` on `kpl_list`; `(ts_code, trade_date)` on `limit_step`, `moneyflow_ths`
+- **Thread safety**: All analyzer queries must be read-only (no DDL, no temp tables). Use CTE/window functions instead. `BoardSurvivalAnalyzer` uses CTE + LEAD() window function for consecutive date pairing
+- **Parallel analyzers**: Independent analyzers run in ThreadPoolExecutor. Never nest ThreadPoolExecutor inside another pool on the same SQLite connection
+- **Sync parallelism**: API HTTP fetches are parallelized (4 workers); DB writes are sequential (SQLite single-writer)
+- **ROW_NUMBER batch queries**: Always enumerate columns explicitly in the outer SELECT to exclude the `rn` column
+
 ## Conventions
 
 - Python 3.12+
@@ -113,3 +128,4 @@ hit-astocker firstboard / lianban / sector / dragon / flow / predict
 - Immutable tuples for collections in model outputs
 - Date format: `date` objects internally, `YYYYMMDD` strings for Tushare API
 - Frozen dataclasses for all model outputs
+- After writing code, commit and push to GitHub

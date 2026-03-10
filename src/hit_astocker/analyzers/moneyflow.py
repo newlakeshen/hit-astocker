@@ -14,11 +14,7 @@ class MoneyFlowAnalyzer:
     def analyze(self, trade_date: date, ts_codes: list[str] | None = None) -> list[MoneyFlowResult]:
         """Analyze money flow for given stocks or top inflow stocks."""
         if ts_codes:
-            records = [
-                self._repo.find_by_stock(trade_date, code)
-                for code in ts_codes
-            ]
-            records = [r for r in records if r is not None]
+            records = self._repo.find_by_codes(trade_date, ts_codes)
         else:
             records = self._repo.find_top_inflow(trade_date, top_n=30)
 

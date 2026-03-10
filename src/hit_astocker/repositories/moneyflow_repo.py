@@ -22,6 +22,16 @@ class MoneyFlowRepository(BaseRepository):
         rows = self.find_by_code_and_date(ts_code, date_str)
         return self._to_model(rows[0]) if rows else None
 
+    def find_by_codes(self, trade_date: date, ts_codes: list[str]) -> list[MoneyFlowRecord]:
+        """Batch load money flow for multiple stocks in one query."""
+        if not ts_codes:
+            return []
+        date_str = trade_date.strftime(TUSHARE_DATE_FMT)
+        placeholders = ",".join("?" * len(ts_codes))
+        sql = f"SELECT * FROM moneyflow_ths WHERE trade_date = ? AND ts_code IN ({placeholders})"
+        rows = self._conn.execute(sql, [date_str, *ts_codes]).fetchall()
+        return [self._to_model(r) for r in rows]
+
     def find_top_inflow(self, trade_date: date, top_n: int = 20) -> list[MoneyFlowRecord]:
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         sql = """

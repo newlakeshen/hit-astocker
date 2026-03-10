@@ -41,60 +41,56 @@ class BoardSurvivalAnalyzer:
         """Compute survival rates from historical data.
 
         Uses all limit_step data up to end_date, going back lookback_years.
+        Optimized: single SQL query with CTE replaces ~5000 per-day queries.
+        Thread-safe: no temp tables or DDL, pure read-only query.
         """
         end_str = end_date.strftime(TUSHARE_DATE_FMT)
-        start_date = date(end_date.year - lookback_years, end_date.month, end_date.day)
+        # Safe leap-year handling: clamp to last day of month
+        start_year = end_date.year - lookback_years
+        try:
+            start_date = date(start_year, end_date.month, end_date.day)
+        except ValueError:
+            # Feb 29 in non-leap year → use Feb 28
+            start_date = date(start_year, end_date.month, 28)
         start_str = start_date.strftime(TUSHARE_DATE_FMT)
 
-        # Get all trading dates with limit_step data
-        dates_sql = """
-            SELECT DISTINCT trade_date FROM limit_step
-            WHERE trade_date >= ? AND trade_date <= ?
-            ORDER BY trade_date
+        # Single CTE-based query: build consecutive date pairs inline,
+        # then join limit_step to itself across adjacent trading days.
+        survival_sql = """
+            WITH trading_dates AS (
+                SELECT DISTINCT trade_date,
+                       LEAD(trade_date) OVER (ORDER BY trade_date) AS next_date
+                FROM limit_step
+                WHERE trade_date >= ? AND trade_date <= ?
+            )
+            SELECT
+                a.nums AS height,
+                COUNT(*) AS total_count,
+                SUM(CASE WHEN b.nums = a.nums + 1 THEN 1 ELSE 0 END) AS survived_count
+            FROM limit_step a
+            INNER JOIN trading_dates td ON a.trade_date = td.trade_date
+            LEFT JOIN limit_step b
+                ON a.ts_code = b.ts_code AND b.trade_date = td.next_date
+            WHERE td.next_date IS NOT NULL
+            GROUP BY a.nums
+            ORDER BY a.nums
         """
-        date_rows = self._conn.execute(dates_sql, (start_str, end_str)).fetchall()
-        trading_dates = [r["trade_date"] for r in date_rows]
+        rows = self._conn.execute(survival_sql, (start_str, end_str)).fetchall()
 
-        if len(trading_dates) < 2:
+        if not rows:
             return SurvivalModel(
                 stats=(), overall_survival_rate=0.0,
                 data_start_date=start_str, data_end_date=end_str, total_samples=0,
             )
 
-        # Build date-pair adjacency: for each consecutive trading day pair,
-        # count stocks at height N on day[i] that appear at height N+1 on day[i+1]
-        height_survival: dict[int, tuple[int, int]] = {}  # height -> (total, survived)
-
-        for i in range(len(trading_dates) - 1):
-            today = trading_dates[i]
-            tomorrow = trading_dates[i + 1]
-
-            # Get stocks at each height today
-            today_sql = "SELECT ts_code, nums FROM limit_step WHERE trade_date = ?"
-            today_rows = self._conn.execute(today_sql, (today,)).fetchall()
-
-            # Get stocks at each height tomorrow
-            tomorrow_sql = "SELECT ts_code, nums FROM limit_step WHERE trade_date = ?"
-            tomorrow_rows = self._conn.execute(tomorrow_sql, (tomorrow,)).fetchall()
-            tomorrow_map = {r["ts_code"]: r["nums"] for r in tomorrow_rows}
-
-            for row in today_rows:
-                h = row["nums"]
-                code = row["ts_code"]
-                total, survived = height_survival.get(h, (0, 0))
-                total += 1
-                # Check if this stock survived to h+1 tomorrow
-                next_h = tomorrow_map.get(code, 0)
-                if next_h == h + 1:
-                    survived += 1
-                height_survival[h] = (total, survived)
-
         # Build stats
         stats = []
         total_all = 0
         survived_all = 0
-        for h in sorted(height_survival.keys()):
-            total, survived = height_survival[h]
+        for row in rows:
+            h = row["height"]
+            total = row["total_count"]
+            survived = row["survived_count"]
             rate = survived / max(total, 1)
             total_all += total
             survived_all += survived
@@ -103,7 +99,7 @@ class BoardSurvivalAnalyzer:
                 total_count=total,
                 survived_count=survived,
                 survival_rate=round(rate, 4),
-                avg_pct_chg_next=0.0,  # Would need daily_bar data to compute
+                avg_pct_chg_next=0.0,
             ))
 
         overall = survived_all / max(total_all, 1)

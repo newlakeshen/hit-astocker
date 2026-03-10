@@ -125,13 +125,9 @@ class EventClassifier:
         if prev_date:
             yesterday_themes = self._kpl_repo.get_themes_by_date(prev_date)
 
-        # Persistence: check how many recent days each theme appeared
+        # Persistence: check how many recent days each theme appeared (single query)
         recent_days = get_recent_trading_days(trade_date, 5)
-        theme_day_counts: dict[str, int] = {}
-        for d in recent_days:
-            day_themes = self._kpl_repo.get_themes_by_date(d)
-            for theme in day_themes:
-                theme_day_counts[theme] = theme_day_counts.get(theme, 0) + 1
+        theme_day_counts = self._kpl_repo.get_themes_by_dates(recent_days)
 
         # Build ThemeHeat results
         heats = []

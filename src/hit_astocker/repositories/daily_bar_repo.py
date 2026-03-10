@@ -48,6 +48,39 @@ class DailyBarRepository(BaseRepository):
         rows = self._conn.execute(sql, (ts_code, date_str, count)).fetchall()
         return [self._to_model(r) for r in reversed(rows)]  # oldest first
 
+    def find_recent_bars_batch(
+        self, ts_codes: list[str], trade_date: date, count: int = 6
+    ) -> dict[str, list[DailyBar]]:
+        """Batch load recent bars for multiple stocks in one query.
+
+        Returns {ts_code: [bars oldest→newest]}.
+        Uses a window function to rank rows per stock, avoiding N+1 queries.
+        """
+        if not ts_codes:
+            return {}
+        date_str = trade_date.strftime(TUSHARE_DATE_FMT)
+        placeholders = ",".join("?" * len(ts_codes))
+        sql = f"""
+            SELECT trade_date, ts_code, "open", high, low, "close",
+                   pre_close, "change", pct_chg, vol, amount
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY ts_code ORDER BY trade_date DESC
+                ) AS rn
+                FROM daily_bar
+                WHERE ts_code IN ({placeholders}) AND trade_date <= ?
+            ) WHERE rn <= ?
+            ORDER BY ts_code, trade_date
+        """
+        params = [*ts_codes, date_str, count]
+        rows = self._conn.execute(sql, params).fetchall()
+
+        result: dict[str, list[DailyBar]] = {}
+        for r in rows:
+            bar = self._to_model(r)
+            result.setdefault(bar.ts_code, []).append(bar)
+        return result
+
     @staticmethod
     def _to_model(row: sqlite3.Row) -> DailyBar:
         return DailyBar(

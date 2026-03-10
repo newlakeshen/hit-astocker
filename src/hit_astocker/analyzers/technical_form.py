@@ -34,18 +34,23 @@ class TechnicalFormAnalyzer:
         self._factor_repo = StockFactorRepository(conn)
 
     def analyze(self, trade_date: date, ts_codes: list[str]) -> list[TechnicalFormScore]:
-        """Compute technical form scores for candidate stocks."""
+        """Compute technical form scores for candidate stocks (batch query)."""
+        if not ts_codes:
+            return []
+
+        # Batch load recent 3 days of factors for ALL codes in one query
+        factors_map = self._factor_repo.find_recent_batch(ts_codes, trade_date, count=3)
+
         results = []
         for code in ts_codes:
-            score = self._score_stock(code, trade_date)
+            factors = factors_map.get(code, [])
+            score = self._score_from_factors(code, factors)
             results.append(score)
         return results
 
-    def _score_stock(self, ts_code: str, trade_date: date) -> TechnicalFormScore:
-        """Score a single stock's technical setup."""
-        # Get recent 3 days of factors for trend detection
-        factors = self._factor_repo.find_recent(ts_code, trade_date, count=3)
-
+    @classmethod
+    def _score_from_factors(cls, ts_code: str, factors: list) -> TechnicalFormScore:
+        """Score a stock from pre-loaded factor data."""
         if not factors:
             return TechnicalFormScore(
                 ts_code=ts_code,
@@ -57,10 +62,10 @@ class TechnicalFormAnalyzer:
         latest = factors[-1]
         prev = factors[-2] if len(factors) >= 2 else None
 
-        macd_score = self._score_macd(latest, prev)
-        kdj_score = self._score_kdj(latest)
-        rsi_score = self._score_rsi(latest)
-        boll_score = self._score_boll(latest)
+        macd_score = cls._score_macd(latest, prev)
+        kdj_score = cls._score_kdj(latest)
+        rsi_score = cls._score_rsi(latest)
+        boll_score = cls._score_boll(latest)
 
         # Weights: MACD(35%) + KDJ(20%) + RSI(25%) + BOLL(20%)
         composite = (

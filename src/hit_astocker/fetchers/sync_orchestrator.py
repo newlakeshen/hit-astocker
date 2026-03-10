@@ -55,37 +55,65 @@ class SyncOrchestrator:
         self._conn = conn
 
     def sync_date(self, trade_date: date, apis: list[str] | None = None) -> dict[str, int]:
-        """Sync all APIs for a given date. Returns {api_name: record_count}."""
+        """Sync all APIs for a given date. Returns {api_name: record_count}.
+
+        Fetches data from all APIs in parallel (I/O-bound HTTP calls),
+        then writes to DB sequentially (SQLite single-writer constraint).
+        """
         results = {}
         date_str = to_tushare_date(trade_date)
+
+        # Filter APIs
+        registry = [
+            (api_name, table_name, fetcher_cls, kwargs)
+            for api_name, table_name, fetcher_cls, kwargs in API_REGISTRY
+            if not apis or api_name in apis
+        ]
+
+        # Phase 1: Fetch all API data in parallel (HTTP I/O)
+        fetched: dict[str, tuple[str, list]] = {}  # api_name -> (table_name, records)
 
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             transient=True,
         ) as progress:
-            for api_name, table_name, fetcher_cls, kwargs in API_REGISTRY:
-                if apis and api_name not in apis:
-                    continue
+            task = progress.add_task("Fetching data from APIs...", total=None)
 
-                task = progress.add_task(f"Syncing {api_name}...", total=None)
-                try:
-                    fetcher = fetcher_cls(self._client, **kwargs)
-                    records = fetcher.fetch(trade_date)
-                    if records:
-                        repo = BaseRepository(self._conn, table_name)
-                        count = repo.upsert_many(records)
-                        results[api_name] = count
-                        self._log_sync(api_name, date_str, count, "success")
-                    else:
-                        results[api_name] = 0
-                        self._log_sync(api_name, date_str, 0, "empty")
-                    progress.update(task, description=f"[green]{api_name}: {results[api_name]} records")
-                except Exception as e:
-                    logger.error("Sync failed for %s: %s", api_name, e)
+            def _fetch_one(item):
+                api_name, _table, fetcher_cls, kwargs = item
+                fetcher = fetcher_cls(self._client, **kwargs)
+                return api_name, fetcher.fetch(trade_date)
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                futures = {pool.submit(_fetch_one, item): item for item in registry}
+                for future in as_completed(futures):
+                    item = futures[future]
+                    api_name = item[0]
+                    table_name = item[1]
+                    try:
+                        _, records = future.result()
+                        fetched[api_name] = (table_name, records or [])
+                    except Exception as e:
+                        logger.error("Fetch failed for %s: %s", api_name, e)
+                        fetched[api_name] = (table_name, None)
+
+            progress.update(task, description=f"[green]Fetched {len(fetched)} APIs")
+
+            # Phase 2: Write to DB sequentially
+            for api_name, table_name, _, _ in registry:
+                table, records = fetched.get(api_name, (table_name, None))
+                if records is None:
                     results[api_name] = -1
-                    self._log_sync(api_name, date_str, 0, "error", str(e))
-                    progress.update(task, description=f"[red]{api_name}: FAILED")
+                    self._log_sync(api_name, date_str, 0, "error", "fetch failed")
+                elif records:
+                    repo = BaseRepository(self._conn, table)
+                    count = repo.upsert_many(records)
+                    results[api_name] = count
+                    self._log_sync(api_name, date_str, count, "success")
+                else:
+                    results[api_name] = 0
+                    self._log_sync(api_name, date_str, 0, "empty")
 
         self._conn.commit()
         return results

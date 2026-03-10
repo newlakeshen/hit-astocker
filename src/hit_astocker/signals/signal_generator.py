@@ -6,6 +6,7 @@ northbound capital, and technical form analysis.
 """
 
 import sqlite3
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date
 
 from hit_astocker.analyzers.board_survival import BoardSurvivalAnalyzer
@@ -43,28 +44,38 @@ class SignalGenerator:
         self._risk_assessor = RiskAssessor()
 
     def generate(self, trade_date: date) -> list[TradingSignal]:
-        # Run all analyzers
-        sentiment = self._sentiment_analyzer.analyze(trade_date)
-        firstboard_results = self._firstboard_analyzer.analyze(trade_date)
-        lianban = self._lianban_analyzer.analyze(trade_date)
-        sector = self._sector_analyzer.analyze(trade_date)
-        dragon = self._dragon_analyzer.analyze(trade_date)
+        # Phase 1: Run independent analyzers in parallel
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            f_sentiment: Future = pool.submit(self._sentiment_analyzer.analyze, trade_date)
+            f_firstboard: Future = pool.submit(self._firstboard_analyzer.analyze, trade_date)
+            f_lianban: Future = pool.submit(self._lianban_analyzer.analyze, trade_date)
+            f_sector: Future = pool.submit(self._sector_analyzer.analyze, trade_date)
+            f_dragon: Future = pool.submit(self._dragon_analyzer.analyze, trade_date)
+            f_event: Future = pool.submit(self._event_classifier.analyze, trade_date)
+            f_survival: Future = pool.submit(self._board_survival_analyzer.compute_model, trade_date)
+            f_hsgt: Future = pool.submit(self._hsgt_repo.find_net_buyers_by_date, trade_date)
 
-        # Get money flow for candidates
+        sentiment = f_sentiment.result()
+        firstboard_results = f_firstboard.result()
+        lianban = f_lianban.result()
+        sector = f_sector.result()
+        dragon = f_dragon.result()
+        event_result = f_event.result()
+        survival_model = f_survival.result()
+        hsgt_net_map = f_hsgt.result()
+
+        # Phase 2: Dependent analyzers (need firstboard candidates)
         candidate_codes = [fb.ts_code for fb in firstboard_results]
-        moneyflow = self._moneyflow_analyzer.analyze(trade_date, candidate_codes)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_moneyflow: Future = pool.submit(
+                self._moneyflow_analyzer.analyze, trade_date, candidate_codes
+            )
+            f_stock_sent: Future = pool.submit(
+                self._stock_sentiment_analyzer.analyze, trade_date, candidate_codes
+            )
 
-        # Event-driven analysis
-        event_result = self._event_classifier.analyze(trade_date)
-
-        # Per-stock sentiment analysis (8-factor enhanced)
-        stock_sentiments = self._stock_sentiment_analyzer.analyze(trade_date, candidate_codes)
-
-        # Board survival model (uses historical data)
-        survival_model = self._board_survival_analyzer.compute_model(trade_date)
-
-        # Northbound capital net buyers
-        hsgt_net_map = self._hsgt_repo.find_net_buyers_by_date(trade_date)
+        moneyflow = f_moneyflow.result()
+        stock_sentiments = f_stock_sent.result()
 
         # Score candidates (10-factor composite)
         scored = self._scorer.score(

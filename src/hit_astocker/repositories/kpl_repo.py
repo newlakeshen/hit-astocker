@@ -34,6 +34,24 @@ class KplRepository(BaseRepository):
         rows = self._conn.execute(sql, (date_str,)).fetchall()
         return {r["theme"]: r["cnt"] for r in rows}
 
+    def get_themes_by_dates(self, trade_dates: list[date]) -> dict[str, int]:
+        """Get theme day-counts across multiple dates in one query.
+
+        Returns {theme: number_of_days_it_appeared}.
+        """
+        if not trade_dates:
+            return {}
+        date_strs = [d.strftime(TUSHARE_DATE_FMT) for d in trade_dates]
+        placeholders = ",".join("?" * len(date_strs))
+        sql = f"""
+            SELECT theme, COUNT(DISTINCT trade_date) as day_cnt
+            FROM kpl_list
+            WHERE trade_date IN ({placeholders}) AND tag = '涨停' AND theme != ''
+            GROUP BY theme
+        """
+        rows = self._conn.execute(sql, date_strs).fetchall()
+        return {r["theme"]: r["day_cnt"] for r in rows}
+
     @staticmethod
     def _to_model(row: sqlite3.Row) -> KplRecord:
         return KplRecord(
