@@ -127,6 +127,10 @@ class ThemeHeat:
     heat_score: float  # 综合热度评分 (0-100)
     leader_codes: tuple[str, ...]  # 龙头股票代码
     leader_names: tuple[str, ...]  # 龙头股票名称
+    # ── 生命周期 + 拥挤度 (v12) ──
+    lifecycle: str = "NEW"        # NEW / HEATING / PEAK / FADING
+    crowding_ratio: float = 0.0   # 拥挤度: 涨停数/板块成分总数 (0-1, 高=危险)
+    crowding_penalty: float = 0.0 # 拥挤度惩罚 (0-30, 从热度中扣除)
 
 
 @dataclass(frozen=True)

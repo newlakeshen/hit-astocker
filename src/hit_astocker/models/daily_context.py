@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date
@@ -15,6 +16,7 @@ from hit_astocker.models.dragon_tiger import DragonTigerResult
 from hit_astocker.models.event_data import EventAnalysisResult, StockSentimentScore
 from hit_astocker.models.sector import SectorRotationResult
 from hit_astocker.models.sentiment import SentimentScore
+from hit_astocker.models.sentiment_cycle import SentimentCycle
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,7 @@ class DailyAnalysisContext:
     moneyflow: tuple[MoneyFlowResult, ...]
     stock_sentiments: tuple[StockSentimentScore, ...]
     coverage: DataCoverage = field(default_factory=DataCoverage)
+    sentiment_cycle: SentimentCycle | None = None
 
 
 def table_has_data(conn: sqlite3.Connection, table: str) -> bool:
@@ -118,8 +121,17 @@ def build_daily_context(
         has_hm=table_has_data(conn, "hm_detail"),
     )
 
-    # Phase 1: independent analyzers
+    # Phase 1: independent analyzers (+ cycle detection)
     sentiment = SentimentAnalyzer(conn, settings).analyze(trade_date)
+
+    from hit_astocker.analyzers.sentiment_cycle import SentimentCycleDetector
+    try:
+        sentiment_cycle = SentimentCycleDetector(conn).detect(trade_date, sentiment)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "SentimentCycleDetector failed for %s", trade_date, exc_info=True,
+        )
+        sentiment_cycle = None
     firstboard = FirstBoardAnalyzer(conn, settings).analyze(trade_date)
     lianban = LianbanAnalyzer(conn).analyze(trade_date)
     sector = SectorRotationAnalyzer(conn).analyze(trade_date)
@@ -158,4 +170,5 @@ def build_daily_context(
         moneyflow=tuple(moneyflow),
         stock_sentiments=tuple(stock_sentiments),
         coverage=coverage,
+        sentiment_cycle=sentiment_cycle,
     )

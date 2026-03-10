@@ -9,6 +9,7 @@ from hit_astocker.config.settings import get_settings
 from hit_astocker.database.connection import get_connection
 from hit_astocker.database.migrations import ensure_schema
 from hit_astocker.models.daily_context import build_daily_context
+from hit_astocker.models.sentiment_cycle import CYCLE_PHASE_HINTS, CYCLE_PHASE_LABELS
 from hit_astocker.renderers.dashboard import render_dashboard
 from hit_astocker.renderers.theme import APP_THEME
 from hit_astocker.signals.signal_generator import SignalGenerator
@@ -46,6 +47,19 @@ def daily(
 
         # Generate signals from pre-computed context (no re-computation)
         signals = SignalGenerator(conn, settings).generate_from_context(ctx)
+
+        # Sentiment cycle display
+        if ctx.sentiment_cycle:
+            cyc = ctx.sentiment_cycle
+            phase_label = CYCLE_PHASE_LABELS.get(cyc.phase.value, cyc.phase.value)
+            phase_hint = CYCLE_PHASE_HINTS.get(cyc.phase.value, "")
+            delta_arrow = "↑" if cyc.score_delta > 0 else ("↓" if cyc.score_delta < 0 else "→")
+            turning = " [bold yellow]⚡ 拐点[/]" if cyc.is_turning_point else ""
+            console.print(
+                f"  情绪周期: [bold cyan]{phase_label}[/] {delta_arrow}"
+                f" (MA3={cyc.score_ma3:.0f} Δ={cyc.score_delta:+.1f}){turning}\n"
+                f"  [dim]{phase_hint}[/]\n"
+            )
 
         # Data coverage warning
         if ctx.coverage.missing_sources:

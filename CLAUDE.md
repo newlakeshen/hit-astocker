@@ -19,7 +19,8 @@ CLI (Typer) -> Commands -> Analyzers -> Repositories -> SQLite (WAL mode)
                             |               |
                        Signal Generator     Batch queries (no N+1)
                        ├── CompositeScorer (10-factor weighted scoring)
-                       ├── RiskAssessor (dynamic thresholds via market context)
+                       ├── RiskAssessor (cycle-aware gating + market regime)
+                       ├── SentimentCycleDetector (6-phase emotion cycle)
                        ├── EventClassifier (事件驱动分类)
                        ├── StockSentimentAnalyzer (8因子个股情绪)
                        ├── BoardSurvivalAnalyzer (连板生存率统计)
@@ -39,29 +40,30 @@ Concurrency model:
 
 - `analyzers/` - Strategy engines:
   - `sentiment.py` - Market sentiment with index adjustment (大盘联动)
+  - `sentiment_cycle.py` - 6-phase emotion cycle detector (ICE→REPAIR→FERMENT→CLIMAX→DIVERGE→RETREAT)
   - `firstboard.py` - First-board scoring (封板时间/强度/纯度/换手/板块)
   - `lianban.py` - Consecutive board ladder (连板天梯)
   - `sector_rotation.py` - Sector rotation tracking
   - `dragon_tiger.py` - Dragon-tiger board analysis
   - `moneyflow.py` / `flow_factors.py` - Money flow (7 sub-factors)
-  - `event_classifier.py` - Event-driven classification (涨停原因分类 + 题材热度)
+  - `event_classifier.py` - Event-driven classification (涨停原因分类 + 题材热度 + 生命周期 + 拥挤度)
   - `stock_sentiment.py` - Per-stock sentiment scoring (8因子: 量比/封单/竞价/题材/催化/人气/北向/技术)
   - `market_context.py` - Market index regime analysis (MA5/MA20 + regime scoring)
   - `signal_validator.py` - T+1 signal validation (legacy, simple close-vs-OHLC)
-  - `backtest_engine.py` - Realistic board-hitting backtest (3 execution modes + stop/target)
+  - `backtest_engine.py` - Realistic board-hitting backtest (3 execution modes + dynamic stop/target)
   - `predictor.py` - Buy/sell prediction engine
   - `board_survival.py` - 连板生存率统计 (10-year historical P(N+1|N))
   - `technical_form.py` - 技术形态评分 (MACD/KDJ/RSI/BOLL)
 - `signals/` - Signal generation pipeline:
   - `composite_scorer.py` - 10-factor weighted scoring
-  - `risk_assessor.py` - Dynamic risk thresholds based on market regime
+  - `risk_assessor.py` - Cycle-aware risk gating + market regime thresholds
   - `signal_generator.py` - Full signal generation with all factor integration
 - `fetchers/` - Tushare data sync (sync_orchestrator + 14 fetchers)
   - Includes: `ths_hot_fetcher.py` (同花顺热股), `hsgt_fetcher.py` (北向资金), `stk_factor_fetcher.py` (技术因子)
 - `repositories/` - SQLite data access layer (13 repositories)
   - Includes: `ths_hot_repo.py`, `hsgt_repo.py`, `stk_factor_repo.py`
 - `models/` - Frozen dataclass models
-  - Includes: `ths_hot_data.py`, `hsgt_data.py`, `stk_factor_data.py`, `backtest.py` (TradeResult/BacktestStats), `daily_context.py` (DataCoverage)
+  - Includes: `ths_hot_data.py`, `hsgt_data.py`, `stk_factor_data.py`, `backtest.py` (TradeResult/BacktestStats + dynamic stops), `daily_context.py` (DataCoverage), `sentiment_cycle.py` (CyclePhase/SentimentCycle)
 - `commands/` - CLI command handlers (13 commands including `event` and `backtest --detail`)
 - `renderers/` - Rich terminal output (tables, dashboard, theme)
 
@@ -73,9 +75,9 @@ hit-astocker daily -d YYYYMMDD      # Full dashboard with market context + event
 hit-astocker sentiment -d YYYYMMDD  # Sentiment with 大盘联动 display
 hit-astocker event -d YYYYMMDD      # Event classification + theme heat + stock sentiment
 hit-astocker signal -d YYYYMMDD     # Trading signals (10-factor scoring)
-hit-astocker backtest -s START -e END [-m MODE] [--stop-loss -7] [--take-profit 5] [--detail]
+hit-astocker backtest -s START -e END [-m MODE] [--stop-loss -7] [--take-profit 5] [--no-dynamic-stops] [--detail]
   # MODE: AUCTION (竞价买) / WEAK_TO_STRONG (弱转强) / RE_SEAL (回封买)
-  # T信号 → T+1买入 → T+2卖出, 处理一字板/炸板止损/冲高兑现
+  # T信号 → T+1买入 → T+2卖出, 动态止损止盈(首板紧/龙头宽)
 hit-astocker firstboard / lianban / sector / dragon / flow / predict
 ```
 
@@ -93,10 +95,28 @@ hit-astocker firstboard / lianban / sector / dragon / flow / predict
 - Optional 3 (require synced tables): popularity/ths_hot(15%), northbound/hsgt(13%), technical_form/stk_factor(12%)
 - When optional tables are empty, core weights are renormalized to sum=1
 
-### Risk Assessment (Dynamic):
+### Sentiment Cycle (6-phase):
+- ICE (冰点) → REPAIR (修复) → FERMENT (发酵) → CLIMAX (高潮) → DIVERGE (分歧) → RETREAT (退潮)
+- Computed from 5-day score trajectory: MA3/MA5, delta (一阶导), acceleration (二阶导)
+- Gating in RiskAssessor: RETREAT→NO_GO, ICE→only SECTOR_LEADER 80+, DIVERGE→no FIRST_BOARD
+- Weight adjustment in CompositeScorer: ICE/RETREAT reduce technical_form/capital_flow, boost seal_quality/survival
+
+### Risk Assessment (Cycle + Regime):
 - Thresholds auto-adjust by market regime (STRONG_BULL → STRONG_BEAR)
+- **Cycle gating**: emotion phase overrides risk for signal types (e.g., DIVERGE blocks FIRST_BOARD)
 - Index-based kill conditions (大盘暴跌 → NO_GO)
 - 5 levels: LOW → FULL, MEDIUM → HALF, HIGH → QUARTER, EXTREME/NO_GO → ZERO
+
+### Event Lifecycle + Crowding:
+- Theme lifecycle: NEW → HEATING → PEAK → FADING (from 3-day count trajectory)
+- Crowding ratio: limit_up_count / concept_members_total
+- Crowding penalty: >60% → -25pts, >50% → -18pts, >40% → -10pts (from heat_score)
+
+### Dynamic Stops (per signal type):
+- FIRST_BOARD: 紧止损(-5%), 标准止盈 (弱转强失败快速回落)
+- FOLLOW_BOARD: 标准止损, 宽止盈(+8%) (连板有惯性)
+- SECTOR_LEADER: 标准止损, 最宽止盈(+10%) (龙头溢价最高)
+- Disabled via --no-dynamic-stops
 
 ### Board Survival Model:
 - Uses up to 10 years of historical limit_step data

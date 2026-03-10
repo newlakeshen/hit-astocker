@@ -25,6 +25,7 @@ from hit_astocker.models.dragon_tiger import DragonTigerResult
 from hit_astocker.models.event_data import EventAnalysisResult, StockSentimentScore, ThemeHeat
 from hit_astocker.models.sector import SectorRotationResult
 from hit_astocker.models.sentiment import SentimentScore
+from hit_astocker.models.sentiment_cycle import CyclePhase, SentimentCycle
 
 if TYPE_CHECKING:
     from hit_astocker.models.daily_context import DataCoverage
@@ -58,6 +59,7 @@ class CompositeScorer:
         survival_model: SurvivalModel | None = None,
         hsgt_net_map: dict[str, float] | None = None,
         coverage: DataCoverage | None = None,
+        cycle: SentimentCycle | None = None,
     ) -> list[ScoredCandidate]:
         s = self._settings
 
@@ -83,6 +85,7 @@ class CompositeScorer:
             northbound_map=northbound_map,
             survival_model=survival_model,
             coverage=coverage,
+            cycle=cycle,
         )
 
         # ── 1. FIRST_BOARD (首板弱转强/回封) ─────────────────────────
@@ -95,7 +98,7 @@ class CompositeScorer:
             raw["sector"] = 100.0 if fb.industry in sector_names else raw["sector"]
             raw["survival"] = _survival_score(1, survival_model)
 
-            weights = _fb_weights(s)
+            weights = _cycle_adjust_weights(_fb_weights(s), cycle, "FIRST_BOARD")
             composite = _weighted_sum(raw, weights)
             clean = {k: v for k, v in raw.items() if v is not None}
             candidates.append(ScoredCandidate(
@@ -114,7 +117,7 @@ class CompositeScorer:
                 raw["survival"] = _survival_score(tier.height, survival_model)
                 raw["height_momentum"] = _score_height_momentum(tier.height)
 
-                weights = _fl_weights(s)
+                weights = _cycle_adjust_weights(_fl_weights(s), cycle, "FOLLOW_BOARD")
                 composite = _weighted_sum(raw, weights)
                 clean = {k: v for k, v in raw.items() if v is not None}
                 candidates.append(ScoredCandidate(
@@ -136,10 +139,10 @@ class CompositeScorer:
                     # Leaders of hot themes → full sector score
                     raw["sector"] = 100.0
                     # Boost event_catalyst with theme heat
-                    ec = raw["event_catalyst"]  # always float from _common_factors
+                    ec = raw.get("event_catalyst") or 50.0
                     raw["event_catalyst"] = max(ec, th.heat_score)
 
-                    weights = _sl_weights(s)
+                    weights = _cycle_adjust_weights(_sl_weights(s), cycle, "SECTOR_LEADER")
                     composite = _weighted_sum(raw, weights)
                     clean = {k: v for k, v in raw.items() if v is not None}
                     candidates.append(ScoredCandidate(
@@ -158,7 +161,7 @@ class _SharedMaps:
     __slots__ = (
         "sentiment", "sector_names", "moneyflow_map", "dragon",
         "event_map", "sentiment_map", "northbound_map", "survival_model",
-        "coverage",
+        "coverage", "cycle",
     )
 
     def __init__(
@@ -172,6 +175,7 @@ class _SharedMaps:
         northbound_map: dict[str, float],
         survival_model: SurvivalModel | None,
         coverage: DataCoverage | None,
+        cycle: SentimentCycle | None = None,
     ) -> None:
         self.sentiment = sentiment
         self.sector_names = sector_names
@@ -182,6 +186,7 @@ class _SharedMaps:
         self.northbound_map = northbound_map
         self.survival_model = survival_model
         self.coverage = coverage
+        self.cycle = cycle
 
 
 # ── common factor computation ─────────────────────────────────────────
@@ -363,6 +368,66 @@ def _sl_weights(s: Settings) -> dict[str, float]:
         "northbound": s.sl_northbound_weight,
         "technical_form": s.sl_technical_form_weight,
     }
+
+
+def _cycle_adjust_weights(
+    weights: dict[str, float],
+    cycle: SentimentCycle | None,
+    signal_type: str,
+) -> dict[str, float]:
+    """Apply cycle-phase-based gating to factor weights.
+
+    打板策略在不同情绪周期下, 各因子的预测力差异巨大:
+    - ICE/RETREAT: 技术面完全失效, 只有确定性因子 (封板/龙头/生存率) 有意义
+    - CLIMAX: 所有因子正常, 但应增加确定性因子权重 (警惕拐点)
+    - DIVERGE: 首板因子大幅降权 (炸板概率高), 生存率权重提升
+
+    调整后自动归一化到 sum=1, 不影响 _weighted_sum 的重分配逻辑.
+    """
+    if cycle is None:
+        return weights
+
+    phase = cycle.phase
+    adjusted = dict(weights)
+
+    if phase in (CyclePhase.ICE, CyclePhase.RETREAT):
+        # 冰点/退潮: 技术面、资金面失效
+        for k in ("technical_form", "capital_flow", "northbound"):
+            if k in adjusted:
+                adjusted[k] *= 0.3
+        # 提升确定性因子
+        for k in ("seal_quality", "survival", "leader_position", "theme_heat"):
+            if k in adjusted:
+                adjusted[k] *= 1.4
+    elif phase == CyclePhase.DIVERGE:
+        # 分歧: 减弱偏乐观因子, 增强安全边际因子
+        for k in ("event_catalyst", "stock_sentiment"):
+            if k in adjusted:
+                adjusted[k] *= 0.6
+        for k in ("survival", "seal_quality"):
+            if k in adjusted:
+                adjusted[k] *= 1.3
+    elif phase == CyclePhase.REPAIR:
+        # 修复: 增加确定性要求
+        for k in ("seal_quality", "survival", "leader_position"):
+            if k in adjusted:
+                adjusted[k] *= 1.2
+    elif phase == CyclePhase.CLIMAX:
+        # 高潮: 轻微偏向确定性 (防拐点)
+        if cycle.score_delta < -3:
+            # 高潮末期
+            for k in ("seal_quality", "survival"):
+                if k in adjusted:
+                    adjusted[k] *= 1.2
+            for k in ("event_catalyst",):
+                if k in adjusted:
+                    adjusted[k] *= 0.8
+
+    # Renormalize to sum=1
+    total = sum(adjusted.values())
+    if total > 0:
+        return {k: v / total for k, v in adjusted.items()}
+    return weights
 
 
 def _weighted_sum(factors: dict[str, float | None], weights: dict[str, float]) -> float:

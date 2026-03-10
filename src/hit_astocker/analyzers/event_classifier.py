@@ -338,7 +338,7 @@ class EventClassifier:
         return matched
 
     def _compute_theme_heats(self, trade_date: date, today_records) -> list[ThemeHeat]:
-        """Compute theme heat with persistence tracking."""
+        """Compute theme heat with persistence, lifecycle, and crowding."""
         today_themes: dict[str, list[tuple[str, str]]] = {}
         for rec in today_records:
             if not rec.theme:
@@ -356,10 +356,16 @@ class EventClassifier:
         recent_days = get_recent_trading_days(trade_date, 5)
         theme_day_counts = self._kpl_repo.get_themes_by_dates(recent_days)
 
+        # Pre-fetch T-2 theme counts for lifecycle detection
+        t_minus_2_themes: dict[str, int] = {}
+        if len(recent_days) >= 2:
+            t_minus_2_themes = self._kpl_repo.get_themes_by_date(recent_days[1])
+
         heats = []
         for theme, stocks in today_themes.items():
             today_count = len(stocks)
             yesterday_count = yesterday_themes.get(theme, 0)
+            t2_count = t_minus_2_themes.get(theme, 0)
             persistence = theme_day_counts.get(theme, 0) + 1
 
             if yesterday_count == 0:
@@ -371,7 +377,21 @@ class EventClassifier:
             else:
                 trend = "STABLE"
 
+            # ── Lifecycle: NEW → HEATING → PEAK → FADING ──
+            lifecycle = _determine_lifecycle(
+                today_count, yesterday_count, t2_count, persistence, trend,
+            )
+
+            # ── Crowding: 涨停数/板块成分股数 ──
+            limit_up_codes = {s[0] for s in stocks}
+            crowding_ratio, crowding_penalty = self._compute_crowding(
+                theme, limit_up_codes, today_count,
+            )
+
             heat_score = _compute_heat_score(today_count, persistence, trend)
+            # Apply crowding penalty (high crowding → lower effective heat)
+            heat_score = max(0, heat_score - crowding_penalty)
+
             codes = tuple(s[0] for s in stocks[:5])
             names = tuple(s[1] for s in stocks[:5])
 
@@ -384,9 +404,45 @@ class EventClassifier:
                 heat_score=round(heat_score, 2),
                 leader_codes=codes,
                 leader_names=names,
+                lifecycle=lifecycle,
+                crowding_ratio=round(crowding_ratio, 4),
+                crowding_penalty=round(crowding_penalty, 2),
             ))
 
         return sorted(heats, key=lambda h: h.heat_score, reverse=True)
+
+    def _compute_crowding(
+        self,
+        theme: str,
+        limit_up_codes: set[str],
+        today_count: int,
+    ) -> tuple[float, float]:
+        """Compute crowding ratio and penalty for a theme.
+
+        拥挤度 = 涨停股数 / 板块成分股总数
+        高拥挤 (>50%) 意味着板块内大部分股票已涨停, 次日大概率分歧.
+        """
+        # Try concept membership for sector size
+        members = self._concept_repo.get_concept_members(theme)
+        if not members or len(members) < 3:
+            # No concept data or too small → no penalty
+            return 0.0, 0.0
+
+        ratio = len(limit_up_codes & set(members)) / len(members)
+
+        # Penalty curve: gentle below 30%, steep above 50%
+        if ratio > 0.60:
+            penalty = 25.0  # 极度拥挤: 重罚
+        elif ratio > 0.50:
+            penalty = 18.0
+        elif ratio > 0.40:
+            penalty = 10.0
+        elif ratio > 0.30:
+            penalty = 5.0
+        else:
+            penalty = 0.0
+
+        return ratio, penalty
 
     @staticmethod
     def _build_narrative(
@@ -432,6 +488,40 @@ class EventClassifier:
                     parts.append("题材分散")
 
         return " | ".join(parts) if parts else "无明显主线"
+
+
+def _determine_lifecycle(
+    today_count: int,
+    yesterday_count: int,
+    t2_count: int,
+    persistence: int,
+    trend: str,
+) -> str:
+    """Determine theme lifecycle phase.
+
+    NEW:     首日出现 (persistence=1)
+    HEATING: 涨停数连续增长 (today > yesterday > t2)
+    PEAK:    涨停数开始回落但仍有基数 (today < yesterday AND yesterday >= t2)
+    FADING:  连续回落或极度萎缩 (today << yesterday)
+    """
+    if persistence <= 1:
+        return "NEW"
+
+    if trend == "COOLING" and yesterday_count > 0:
+        if today_count < yesterday_count * 0.5:
+            return "FADING"
+        return "PEAK"
+
+    if trend == "HEATING":
+        return "HEATING"
+
+    # STABLE: check if yesterday was growing
+    if yesterday_count >= t2_count and today_count >= yesterday_count:
+        return "HEATING"
+    if yesterday_count > today_count:
+        return "PEAK"
+
+    return "HEATING"  # default for stable/growing
 
 
 def _compute_heat_score(today_count: int, persistence_days: int, trend: str) -> float:

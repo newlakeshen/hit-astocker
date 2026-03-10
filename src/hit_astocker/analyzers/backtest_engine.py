@@ -159,13 +159,16 @@ class BacktestEngine:
         slip = config.slippage_bps / 10000
         eff_entry = raw_entry * (1 + slip)
 
-        # ── Determine raw exit ──
+        # ── Determine raw exit (with dynamic stops) ──
         t2_bar = t2_bars.get(code)
         if not t2_bar:
             return self._skip(sig, SkipReason.NO_T2_BAR)
 
         t2_limit = t2_limits.get(code)
-        raw_exit, exit_reason = self._determine_exit(eff_entry, t2_bar, t2_limit, config)
+        eff_stop, eff_target = config.effective_stops(sig.signal_type.value)
+        raw_exit, exit_reason = self._determine_exit(
+            eff_entry, t2_bar, t2_limit, config, eff_stop, eff_target,
+        )
 
         # ── Apply slippage to exit ──
         eff_exit = raw_exit * (1 - slip)
@@ -260,6 +263,8 @@ class BacktestEngine:
         t2_bar: DailyBar,
         t2_limit: LimitRecord | None,
         config: BacktestConfig,
+        eff_stop_pct: float | None = None,
+        eff_target_pct: float | None = None,
     ) -> tuple[float, str]:
         """Return (raw_exit_price, exit_reason). Slippage applied by caller."""
         # 1. 一字跌停: can't sell (no buyers)
@@ -271,8 +276,10 @@ class BacktestEngine:
         if is_yizi_down:
             return t2_bar.close, ExitReason.YIZI_HELD.value
 
-        stop_price = entry_price * (1 + config.stop_loss_pct / 100)
-        target_price = entry_price * (1 + config.take_profit_pct / 100)
+        stop_pct = eff_stop_pct if eff_stop_pct is not None else config.stop_loss_pct
+        target_pct = eff_target_pct if eff_target_pct is not None else config.take_profit_pct
+        stop_price = entry_price * (1 + stop_pct / 100)
+        target_price = entry_price * (1 + target_pct / 100)
 
         # 2. Open gaps through stop/target
         if t2_bar.open <= stop_price:

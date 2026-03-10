@@ -86,6 +86,7 @@ def backtest(
     take_profit: float = typer.Option(5.0, "--take-profit", help="止盈线 (%%, 正数)"),
     slippage: float = typer.Option(10.0, "--slippage", help="滑点 (基点, 单边)"),
     max_premium: float = typer.Option(7.0, "--max-premium", help="竞价溢价上限 (%%)"),
+    no_dynamic_stops: bool = typer.Option(False, "--no-dynamic-stops", help="禁用动态止损止盈"),
     detail: bool = typer.Option(False, "--detail", help="显示逐笔明细"),
 ):
     """真实打板回测: T信号 → T+1买入 → T+2卖出, 含摩擦成本."""
@@ -115,6 +116,7 @@ def backtest(
         take_profit_pct=take_profit,
         slippage_bps=slippage,
         max_open_premium_pct=max_premium,
+        dynamic_stops=not no_dynamic_stops,
     )
 
     with get_connection(settings.db_path) as conn:
@@ -157,14 +159,14 @@ def backtest(
             t1 = get_next_trading_day(d)
             t2 = get_next_trading_day(t1) if t1 else None
             if not t1 or not t2:
-                # Count these signals as skipped (no T+1/T+2 data)
+                skip_r = "NO_T1_BAR" if t1 is None else "NO_T2_BAR"
                 for sig in signals:
                     all_skipped.append(SkippedSignal(
                         trade_date=sig.trade_date,
                         ts_code=sig.ts_code,
                         name=sig.name,
                         signal_score=sig.composite_score,
-                        skip_reason="NO_T2_BAR",
+                        skip_reason=skip_r,
                     ))
                 total_signals += len(signals)
                 continue
@@ -208,6 +210,17 @@ def backtest(
 def _render_config(config: BacktestConfig, start: str, end: str) -> None:
     mode_label = _MODE_LABELS.get(config.execution_mode.value, config.execution_mode.value)
     cost_bps = (config.commission_rate * 2 + config.stamp_duty_rate) * 10000
+    dynamic_str = ""
+    if config.dynamic_stops:
+        fb_sl, fb_tp = config.effective_stops("FIRST_BOARD")
+        fl_sl, fl_tp = config.effective_stops("FOLLOW_BOARD")
+        sl_sl, sl_tp = config.effective_stops("SECTOR_LEADER")
+        dynamic_str = (
+            f"\n动态止损 [bold cyan]ON[/]: "
+            f"首板{fb_sl:+.0f}%/{fb_tp:+.0f}%  "
+            f"接力{fl_sl:+.0f}%/{fl_tp:+.0f}%  "
+            f"龙头{sl_sl:+.0f}%/{sl_tp:+.0f}%"
+        )
     text = (
         f"区间 {start} ~ {end}  |  "
         f"模式 [bold cyan]{mode_label}[/]  |  "
@@ -217,6 +230,7 @@ def _render_config(config: BacktestConfig, start: str, end: str) -> None:
         f"手续费 {cost_bps:.0f}bp/笔  |  "
         f"溢价上限 {config.max_open_premium_pct:.0f}%  |  "
         f"回封换手 ≥{config.min_reseal_turnover:.0f}%"
+        + dynamic_str
     )
     console.print(Panel(text, title="回测配置", border_style="cyan"))
 

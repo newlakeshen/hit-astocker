@@ -45,6 +45,7 @@ class SignalGenerator:
             survival_model=ctx.survival_model,
             hsgt_net_map=ctx.hsgt_net_map,
             coverage=ctx.coverage,
+            cycle=ctx.sentiment_cycle,
         )
 
         signals = []
@@ -52,7 +53,9 @@ class SignalGenerator:
             if should_exclude(candidate.ts_code, candidate.name):
                 continue
 
-            risk = self._risk_assessor.assess(candidate, ctx.sentiment)
+            risk = self._risk_assessor.assess(
+                candidate, ctx.sentiment, cycle=ctx.sentiment_cycle,
+            )
             if risk == RiskLevel.NO_GO:
                 continue
 
