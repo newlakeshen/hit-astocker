@@ -128,4 +128,5 @@ hit-astocker firstboard / lianban / sector / dragon / flow / predict
 - Immutable tuples for collections in model outputs
 - Date format: `date` objects internally, `YYYYMMDD` strings for Tushare API
 - Frozen dataclasses for all model outputs
-- After writing code, commit and push to GitHub
+- 所有交流使用中文
+- 写完代码后主动提交并推送到 GitHub
