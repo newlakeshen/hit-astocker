@@ -73,4 +73,6 @@ def signal(
         # Summary
         if signals:
             avg_score = sum(s.composite_score for s in signals) / len(signals)
-            console.print(f"  平均评分: {avg_score:.1f}")
+            score_source = signals[0].score_source if signals else "rules"
+            source_label = "ML模型" if score_source == "model" else "规则打分"
+            console.print(f"  平均评分: {avg_score:.1f}  (评分来源: {source_label})")

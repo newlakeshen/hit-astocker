@@ -15,9 +15,13 @@ from hit_astocker.models.event_data import (
     EVENT_KEYWORDS,
     EventAnalysisResult,
     EventType,
+    OrderAmountLevel,
+    PolicyLevel,
     StockEvent,
     ThemeHeat,
     compute_event_weight,
+    detect_order_amount_level,
+    detect_policy_level,
 )
 from hit_astocker.models.kpl_data import KplRecord
 from hit_astocker.models.limit_data import LimitDirection, LimitRecord
@@ -26,7 +30,11 @@ from hit_astocker.repositories.concept_repo import ConceptRepository, ThsMemberR
 from hit_astocker.repositories.kpl_repo import KplRepository, split_themes
 from hit_astocker.repositories.limit_repo import LimitListRepository
 from hit_astocker.repositories.limit_step_repo import LimitStepRepository
-from hit_astocker.utils.date_utils import get_previous_trading_day, get_recent_trading_days
+from hit_astocker.utils.date_utils import (
+    count_trading_days_between,
+    get_previous_trading_day,
+    get_recent_trading_days,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -190,17 +198,32 @@ class EventClassifier:
         # Compute diffusion rate for primary concept
         diffusion_rate = self._compute_diffusion(concepts, limit_up_set)
 
-        # ── Layer 1: Announcement-based (dynamic decay) ──
+        # ── Layer 1: Announcement-based (trading-day decay) ──
         anns = ann_map.get(code, [])
         if anns:
             event_type = self._classify_from_announcements(anns)
             if event_type != EventType.UNKNOWN:
                 ann = anns[0]
                 ann_title = ann.title or ""
-                # 计算公告距今交易日数
-                days_since = (trade_date - ann.ann_date).days
+                # 使用交易日数计算衰减 (修复: 旧代码用自然日)
+                trading_days_since = count_trading_days_between(
+                    ann.ann_date, trade_date,
+                )
+                # 政策级别检测
+                policy_level = PolicyLevel.UNKNOWN
+                if event_type == EventType.POLICY:
+                    policy_level = detect_policy_level(ann_title)
+                # 订单/合同金额检测
+                order_amount_level = OrderAmountLevel.UNKNOWN
+                order_amount_wan = None
+                if event_type == EventType.NEWS:
+                    order_amount_level, order_amount_wan = detect_order_amount_level(
+                        ann_title,
+                    )
                 weight = compute_event_weight(
-                    event_type, days_since, ann_title,
+                    event_type, trading_days_since, ann_title,
+                    policy_level=policy_level,
+                    order_amount_level=order_amount_level,
                 )
                 return StockEvent(
                     ts_code=code,
@@ -215,14 +238,22 @@ class EventClassifier:
                     ann_title=ann_title,
                     concepts=concepts,
                     diffusion_rate=diffusion_rate,
+                    policy_level=policy_level,
+                    order_amount_level=order_amount_level,
+                    order_amount_wan=order_amount_wan,
                 )
 
         # ── Layer 2: Concept-based (no decay, concepts are structural) ──
         if concepts:
             event_type = self._classify_from_concepts(concepts)
             if event_type != EventType.UNKNOWN:
+                # 政策级别: 从概念名中检测
+                policy_level = PolicyLevel.UNKNOWN
+                if event_type == EventType.POLICY:
+                    policy_level = detect_policy_level(" ".join(concepts))
                 weight = compute_event_weight(
                     event_type, 0, " ".join(concepts),
+                    policy_level=policy_level,
                 )
                 return StockEvent(
                     ts_code=code,
@@ -236,6 +267,7 @@ class EventClassifier:
                     event_layer="CONCEPT",
                     concepts=concepts,
                     diffusion_rate=diffusion_rate,
+                    policy_level=policy_level,
                 )
 
         # ── Layer 3: Keyword matching (no decay, inferred from today's data) ──
@@ -250,7 +282,19 @@ class EventClassifier:
             matched_types,
             key=lambda t: EVENT_BASE_STRENGTH.get(t, 0.0),
         )
-        weight = compute_event_weight(primary, 0, lu_desc)
+        # L3 也检测金额 (涨停原因里可能含"中标5亿")
+        order_amount_level = OrderAmountLevel.UNKNOWN
+        order_amount_wan = None
+        if primary == EventType.NEWS:
+            order_amount_level, order_amount_wan = detect_order_amount_level(lu_desc)
+        policy_level = PolicyLevel.UNKNOWN
+        if primary == EventType.POLICY:
+            policy_level = detect_policy_level(lu_desc)
+        weight = compute_event_weight(
+            primary, 0, lu_desc,
+            policy_level=policy_level,
+            order_amount_level=order_amount_level,
+        )
 
         return StockEvent(
             ts_code=code,
@@ -264,6 +308,9 @@ class EventClassifier:
             event_layer="KEYWORD",
             concepts=concepts,
             diffusion_rate=diffusion_rate,
+            policy_level=policy_level,
+            order_amount_level=order_amount_level,
+            order_amount_wan=order_amount_wan,
         )
 
     @staticmethod

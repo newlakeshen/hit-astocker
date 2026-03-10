@@ -64,3 +64,16 @@ def get_trading_days_between(start: date, end: date) -> list[date]:
     """Return sorted trading days in [start, end] inclusive."""
     from hit_astocker.utils.trade_calendar import get_trade_calendar
     return get_trade_calendar().get_trading_days_between(start, end)
+
+
+def count_trading_days_between(start: date, end: date) -> int:
+    """Count trading days in (start, end] — after start, up to and including end.
+
+    Used for event decay: "how many trading days have passed since event date".
+    Falls back to calendar days if trade calendar not initialised.
+    """
+    try:
+        from hit_astocker.utils.trade_calendar import get_trade_calendar
+        return get_trade_calendar().count_trading_days_between(start, end)
+    except RuntimeError:
+        return (end - start).days

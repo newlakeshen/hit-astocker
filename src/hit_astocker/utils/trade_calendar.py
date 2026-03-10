@@ -137,6 +137,17 @@ class TradeCalendar:
         hi = bisect.bisect_right(self._sorted_days, end)
         return self._sorted_days[lo:hi]
 
+    def count_trading_days_between(self, start: date, end: date) -> int:
+        """Count trading days in (start, end] — after start, up to and including end.
+
+        Used for event decay: "how many trading days have passed since publication".
+        """
+        if not self._sorted_days or start >= end:
+            return (end - start).days  # fallback to calendar days
+        lo = bisect.bisect_right(self._sorted_days, start)
+        hi = bisect.bisect_right(self._sorted_days, end)
+        return max(0, hi - lo)
+
     @property
     def trading_days(self) -> set[date]:
         return self._day_set

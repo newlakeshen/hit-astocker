@@ -16,6 +16,7 @@ from hit_astocker.commands.sector_cmd import sector_app
 from hit_astocker.commands.sentiment_cmd import sentiment_app
 from hit_astocker.commands.signal_cmd import signal_app
 from hit_astocker.commands.sync_cmd import sync_app
+from hit_astocker.commands.train_cmd import train_app
 
 app = typer.Typer(
     name="hit-astocker",
@@ -36,6 +37,7 @@ app.add_typer(backtest_app, name="backtest")
 app.add_typer(predict_app, name="predict")
 app.add_typer(flow_app, name="flow")
 app.add_typer(event_app, name="event")
+app.add_typer(train_app, name="train")
 
 
 @app.callback()

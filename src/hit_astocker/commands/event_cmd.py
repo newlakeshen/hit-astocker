@@ -86,6 +86,22 @@ def _render_event_distribution(result) -> None:
             parts.append(f"{label} {cnt}({cnt / total * 100:.0f}%)")
         console.print(f"  识别层分布: {' | '.join(parts)}")
 
+    # Policy level & order amount breakdown
+    from hit_astocker.models.event_data import OrderAmountLevel, PolicyLevel
+    policy_counts: dict[str, int] = {}
+    amount_counts: dict[str, int] = {}
+    for ev in result.stock_events:
+        if ev.policy_level != PolicyLevel.UNKNOWN:
+            policy_counts[ev.policy_level] = policy_counts.get(ev.policy_level, 0) + 1
+        if ev.order_amount_level != OrderAmountLevel.UNKNOWN:
+            amount_counts[ev.order_amount_level] = amount_counts.get(ev.order_amount_level, 0) + 1
+    if policy_counts:
+        pol_parts = [f"{level} {cnt}" for level, cnt in policy_counts.items()]
+        console.print(f"  政策级别: {' | '.join(pol_parts)}")
+    if amount_counts:
+        amt_parts = [f"{level} {cnt}" for level, cnt in amount_counts.items()]
+        console.print(f"  金额级别: {' | '.join(amt_parts)}")
+
 
 def _render_theme_heat(result) -> None:
     if not result.theme_heats:

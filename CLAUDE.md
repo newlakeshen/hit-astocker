@@ -17,11 +17,20 @@ A股打板量化分析系统 (A-Share Limit-Up Board Hitting Quantitative Analys
 ```
 CLI (Typer) -> Commands -> Analyzers -> Repositories -> SQLite (WAL mode)
                             |               |
-                       Signal Generator     Batch queries (no N+1)
+                       Signal Generator (Two-Stage Pipeline)
+                       │
+                       ├── Stage 1: Hard Filter (stage1_filter.py)
+                       │   └── ST/BJ排除, 大盘暴跌, 周期门控, 质量硬伤
+                       │
+                       ├── Stage 2: Cross-Sectional Ranking
+                       │   ├── ML Model (ranking_model.py) — logistic/GBDT
+                       │   └── Rule-based fallback (composite_scorer.py)
+                       │
                        ├── CompositeScorer (10-factor weighted scoring)
                        ├── RiskAssessor (cycle-aware gating + market regime)
+                       ├── FeatureBuilder (19-dim feature vectors)
                        ├── SentimentCycleDetector (6-phase emotion cycle)
-                       ├── EventClassifier (事件驱动分类)
+                       ├── EventClassifier (3-layer + 政策级别 + 金额级别)
                        ├── StockSentimentAnalyzer (8因子个股情绪)
                        ├── BoardSurvivalAnalyzer (连板生存率统计)
                        ├── TechnicalFormAnalyzer (技术形态分析)
@@ -31,7 +40,7 @@ CLI (Typer) -> Commands -> Analyzers -> Repositories -> SQLite (WAL mode)
 
 Concurrency model:
 - SQLite in WAL mode + check_same_thread=False for concurrent reads
-- SignalGenerator: Phase1 parallel (8 independent analyzers) → Phase2 parallel (2 dependent)
+- SignalGenerator: Stage1 filter → Stage2 rank (ML or rules) → risk assess
 - SyncOrchestrator: parallel HTTP fetches (4 workers) → sequential DB writes
 - daily_cmd: 6 analyzers parallel, then SignalGenerator sequential (avoid nested pools)
 ```
@@ -46,7 +55,7 @@ Concurrency model:
   - `sector_rotation.py` - Sector rotation tracking
   - `dragon_tiger.py` - Dragon-tiger board analysis
   - `moneyflow.py` / `flow_factors.py` - Money flow (7 sub-factors)
-  - `event_classifier.py` - Event-driven classification (涨停原因分类 + 题材热度 + 生命周期 + 拥挤度)
+  - `event_classifier.py` - Event-driven classification (3-layer + 政策级别 + 金额级别 + 交易日衰减)
   - `stock_sentiment.py` - Per-stock sentiment scoring (8因子: 量比/封单/竞价/题材/催化/人气/北向/技术)
   - `market_context.py` - Market index regime analysis (MA5/MA20 + regime scoring)
   - `signal_validator.py` - T+1 signal validation (legacy, simple close-vs-OHLC)
@@ -54,17 +63,20 @@ Concurrency model:
   - `predictor.py` - Buy/sell prediction engine
   - `board_survival.py` - 连板生存率统计 (10-year historical P(N+1|N))
   - `technical_form.py` - 技术形态评分 (MACD/KDJ/RSI/BOLL)
-- `signals/` - Signal generation pipeline:
-  - `composite_scorer.py` - 10-factor weighted scoring
+- `signals/` - Two-stage signal generation pipeline:
+  - `stage1_filter.py` - Hard filter (ST排除/大盘暴跌/周期门控/质量硬伤)
+  - `feature_builder.py` - 19-dim feature vector extraction (13 factor + 6 context)
+  - `ranking_model.py` - ML ranking model (logistic/GBDT, sklearn)
+  - `composite_scorer.py` - 10-factor weighted scoring (rule-based fallback)
   - `risk_assessor.py` - Cycle-aware risk gating + market regime thresholds
-  - `signal_generator.py` - Full signal generation with all factor integration
+  - `signal_generator.py` - Two-stage pipeline orchestrator
 - `fetchers/` - Tushare data sync (sync_orchestrator + 14 fetchers)
   - Includes: `ths_hot_fetcher.py` (同花顺热股), `hsgt_fetcher.py` (北向资金), `stk_factor_fetcher.py` (技术因子)
 - `repositories/` - SQLite data access layer (13 repositories)
   - Includes: `ths_hot_repo.py`, `hsgt_repo.py`, `stk_factor_repo.py`
 - `models/` - Frozen dataclass models
-  - Includes: `ths_hot_data.py`, `hsgt_data.py`, `stk_factor_data.py`, `backtest.py` (TradeResult/BacktestStats + dynamic stops), `daily_context.py` (DataCoverage), `sentiment_cycle.py` (CyclePhase/SentimentCycle)
-- `commands/` - CLI command handlers (13 commands including `event` and `backtest --detail`)
+  - Includes: `ths_hot_data.py`, `hsgt_data.py`, `stk_factor_data.py`, `backtest.py` (TradeResult/BacktestStats + dynamic stops), `daily_context.py` (DataCoverage), `sentiment_cycle.py` (CyclePhase/SentimentCycle), `event_data.py` (PolicyLevel/OrderAmountLevel)
+- `commands/` - CLI command handlers (14 commands including `train`)
 - `renderers/` - Rich terminal output (tables, dashboard, theme)
 
 ## CLI Commands
@@ -74,11 +86,50 @@ hit-astocker sync -d YYYYMMDD       # Sync all data (including ths_hot + hsgt_to
 hit-astocker daily -d YYYYMMDD      # Full dashboard with market context + event analysis
 hit-astocker sentiment -d YYYYMMDD  # Sentiment with 大盘联动 display
 hit-astocker event -d YYYYMMDD      # Event classification + theme heat + stock sentiment
-hit-astocker signal -d YYYYMMDD     # Trading signals (10-factor scoring)
+hit-astocker signal -d YYYYMMDD     # Trading signals (two-stage: filter + ML/rule rank)
+hit-astocker train -s START -e END [-m logistic|gbdt] [--min-samples 200]
+  # Train ML ranking model from historical data
+  # Collects (factor vectors, T+1 return labels) → train → save model
+  # Next signal/backtest run auto-loads trained model
 hit-astocker backtest -s START -e END [-m MODE] [--stop-loss -7] [--take-profit 5] [--no-dynamic-stops] [--detail]
   # MODE: AUCTION (竞价买) / WEAK_TO_STRONG (弱转强) / RE_SEAL (回封买)
   # T信号 → T+1买入 → T+2卖出, 动态止损止盈(首板紧/龙头宽)
 hit-astocker firstboard / lianban / sector / dragon / flow / predict
+```
+
+## Two-Stage Signal Pipeline
+
+### Stage 1: Hard Filter (`stage1_filter.py`)
+Removes candidates that should never be traded:
+- ST / BJ / 风险警示 (制度性排除)
+- 大盘暴跌 (上证 ≤ -3% 或 创业板 ≤ -4%)
+- 情绪极度低迷 (overall_score < 25)
+- 退潮期: 除绝对龙头(score≥85)外全部回避
+- 冰点期: score < 75 回避
+- 首板封板质量极差 (seal_quality < 25)
+- 连板生存率极低 (survival < 15)
+
+### Stage 2: Cross-Sectional Ranking
+**ML Model** (优先, 需先运行 `train` 命令):
+- 19维特征向量: 13个因子分 + 6个上下文特征 (周期/类型/数据可用性)
+- logistic regression (可解释, 默认) 或 GBDT (捕获非线性交互)
+- 训练数据: 历史因子向量 + T+1收益标签 (盈利=1/亏损=0)
+- 5折交叉验证 + AUC评估
+- predict_proba → 概率 × 100 = 综合评分 (0-100)
+
+**Rule-based fallback** (无模型时):
+- 10-factor weighted scoring (current composite_scorer.py)
+- Cycle-aware weight adjustment
+- Dynamic weight redistribution for missing data
+
+### Feature Vector (19 dimensions):
+```
+Factor features (13): sentiment, sector, capital_flow, dragon_tiger,
+  event_catalyst, stock_sentiment, northbound, technical_form,
+  seal_quality, survival, height_momentum, theme_heat, leader_position
+Context features (6): cycle_phase (ordinal 0-5),
+  sig_first_board, sig_follow_board, sig_sector_leader (one-hot),
+  has_northbound_data, has_technical_data
 ```
 
 ## Scoring System
@@ -106,6 +157,14 @@ hit-astocker firstboard / lianban / sector / dragon / flow / predict
 - **Cycle gating**: emotion phase overrides risk for signal types (e.g., DIVERGE blocks FIRST_BOARD)
 - Index-based kill conditions (大盘暴跌 → NO_GO)
 - 5 levels: LOW → FULL, MEDIUM → HALF, HIGH → QUARTER, EXTREME/NO_GO → ZERO
+
+### Event Classification (3-layer + 强度建模):
+- L1 公告触发 (anns_d): 交易日衰减 + 政策级别 + 订单金额级别
+- L2 题材主线 (concept_detail): 概念归属 + 政策级别检测
+- L3 关键词+扩散 (lu_desc/theme): keyword + 金额解析
+- **政策级别**: 国家级(S) / 部委级(A) / 行业级(B) / 地方级(C) → 半衰期×2/1.5/1/0.7
+- **金额级别**: ≥10亿(S) / ≥1亿(A) / ≥5000万(B) / <5000万(C) → 覆盖关键词级别
+- **交易日衰减**: `count_trading_days_between()` 替代 calendar days
 
 ### Event Lifecycle + Crowding:
 - Theme lifecycle: NEW → HEATING → PEAK → FADING (from 3-day count trajectory)
@@ -141,5 +200,6 @@ hit-astocker firstboard / lianban / sector / dragon / flow / predict
 - Immutable tuples for collections in model outputs
 - Date format: `date` objects internally, `YYYYMMDD` strings for Tushare API
 - Frozen dataclasses for all model outputs
+- scikit-learn as optional dependency (`pip install 'hit-astocker[ml]'`)
 - 所有交流使用中文
 - 写完代码后主动提交并推送到 GitHub

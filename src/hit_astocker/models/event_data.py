@@ -1,5 +1,6 @@
 """Event-driven and sentiment data models."""
 
+import re
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -16,6 +17,111 @@ class EventType:
     INDUSTRY = "行业面"  # 行业景气度
     NEWS = "消息面"  # 突发新闻、公告
     UNKNOWN = "未知"
+
+
+class PolicyLevel:
+    """政策级别 — 同类型政策内部也有强弱."""
+
+    STATE = "国家级"       # 国务院/央行/总书记 — 最强, 持续性最长
+    MINISTRY = "部委级"    # 发改委/工信部/证监会 — 强
+    INDUSTRY = "行业级"    # 行业规划/战略 — 中等
+    LOCAL = "地方级"       # 地方补贴/通知 — 较弱
+    UNKNOWN = "未知"
+
+
+class OrderAmountLevel:
+    """订单/合同金额级别 — 金额决定事件含金量."""
+
+    MEGA = "超大单"   # ≥10亿 — 重大合同, S级催化
+    LARGE = "大单"    # ≥1亿 — 显著影响, A级
+    MEDIUM = "中单"   # ≥5000万 — 一般影响, B级
+    SMALL = "小单"    # <5000万 — 影响有限, C级
+    UNKNOWN = "未知"  # 金额未知
+
+
+# ── 政策级别关键词 ──
+_POLICY_LEVEL_KEYWORDS: dict[str, list[str]] = {
+    PolicyLevel.STATE: [
+        "国务院", "中央", "央行", "总书记", "常委会", "政治局",
+        "降息", "降准", "全面深化", "国家主席",
+    ],
+    PolicyLevel.MINISTRY: [
+        "发改委", "工信部", "财政部", "科技部", "商务部", "证监会",
+        "银保监", "国资委", "住建部", "交通部", "农业部", "生态环境部",
+    ],
+    PolicyLevel.INDUSTRY: [
+        "规划", "战略", "行动方案", "指导意见", "发展纲要",
+        "改革", "试点", "示范区",
+    ],
+    PolicyLevel.LOCAL: [
+        "补贴", "通知", "省", "市政府", "地方",
+    ],
+}
+
+
+def detect_policy_level(text: str) -> str:
+    """从文本中识别政策级别 (优先返回最高级别)."""
+    for level in (PolicyLevel.STATE, PolicyLevel.MINISTRY,
+                  PolicyLevel.INDUSTRY, PolicyLevel.LOCAL):
+        for kw in _POLICY_LEVEL_KEYWORDS[level]:
+            if kw in text:
+                return level
+    return PolicyLevel.UNKNOWN
+
+
+def parse_amount_wan(text: str) -> float | None:
+    """从中文文本中解析金额, 归一化为万元.
+
+    支持: 5.2亿, 3000万, 12亿元, 约8000万, 1.5亿元合同 等.
+    Returns None if no amount found.
+    """
+    # 亿 (larger unit, try first)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*亿", text)
+    if m:
+        return float(m.group(1)) * 10000  # 亿 → 万
+
+    # 万
+    m = re.search(r"(\d+(?:\.\d+)?)\s*万", text)
+    if m:
+        return float(m.group(1))
+
+    return None
+
+
+def detect_order_amount_level(text: str) -> tuple[str, float | None]:
+    """从文本中识别订单/合同金额级别.
+
+    Returns (level, amount_wan).
+    """
+    amount = parse_amount_wan(text)
+    if amount is None:
+        return OrderAmountLevel.UNKNOWN, None
+    if amount >= 100000:  # ≥10亿
+        return OrderAmountLevel.MEGA, amount
+    if amount >= 10000:   # ≥1亿
+        return OrderAmountLevel.LARGE, amount
+    if amount >= 5000:    # ≥5000万
+        return OrderAmountLevel.MEDIUM, amount
+    return OrderAmountLevel.SMALL, amount
+
+
+# ── 金额级别 → 事件权重乘数 ──
+_AMOUNT_GRADE_MAP: dict[str, float] = {
+    OrderAmountLevel.MEGA: 1.0,    # 超大单: S级
+    OrderAmountLevel.LARGE: 0.85,  # 大单: A级
+    OrderAmountLevel.MEDIUM: 0.70, # 中单: B级
+    OrderAmountLevel.SMALL: 0.55,  # 小单: C级
+    OrderAmountLevel.UNKNOWN: 0.65, # 金额未知: B-级
+}
+
+# ── 政策级别 → 半衰期调整 (更高级别政策持续更久) ──
+_POLICY_HALF_LIFE_MULTIPLIER: dict[str, float] = {
+    PolicyLevel.STATE: 2.0,     # 国家级: 半衰期翻倍
+    PolicyLevel.MINISTRY: 1.5,  # 部委级: 1.5倍
+    PolicyLevel.INDUSTRY: 1.0,  # 行业级: 标准
+    PolicyLevel.LOCAL: 0.7,     # 地方级: 衰减更快
+    PolicyLevel.UNKNOWN: 1.0,
+}
 
 
 # 关键词 -> 事件类型映射
@@ -154,16 +260,20 @@ EVENT_GRADE_KEYWORDS: dict[str, list[tuple[str, float]]] = {
 
 def compute_event_weight(
     event_type: str,
-    days_since_event: int = 0,
+    trading_days_since: int = 0,
     event_text: str = "",
+    policy_level: str = PolicyLevel.UNKNOWN,
+    order_amount_level: str = OrderAmountLevel.UNKNOWN,
 ) -> float:
     """动态事件权重 = 基础强度 × 事件级别 × 时间衰减.
 
     Parameters
     ----------
     event_type : 事件类型 (EventType.*)
-    days_since_event : 事件发布距今的交易日数 (0=当日)
+    trading_days_since : 事件发布距今的**交易日**数 (0=当日)
     event_text : 公告标题/涨停原因, 用于匹配事件级别
+    policy_level : 政策级别 (仅政策面事件有效)
+    order_amount_level : 订单/合同金额级别 (仅消息面事件有效)
 
     Returns
     -------
@@ -180,13 +290,22 @@ def compute_event_weight(
         if keyword in event_text:
             grade = max(grade, kw_grade)  # 取最高匹配级别
 
-    # ── 2. 时间衰减 (exponential half-life decay) ──
+    # 消息面 (NEWS): 用金额级别覆盖关键词级别 (金额更客观)
+    if event_type == EventType.NEWS and order_amount_level != OrderAmountLevel.UNKNOWN:
+        amount_grade = _AMOUNT_GRADE_MAP.get(order_amount_level, 0.65)
+        grade = max(grade, amount_grade)
+
+    # ── 2. 时间衰减 (exponential half-life decay, 交易日制) ──
     half_life = EVENT_DECAY_HALF_LIVES.get(event_type, 1.0)
-    if days_since_event <= 0:
+    # 政策面: 按政策级别调整半衰期 (国家级持续更久)
+    if event_type == EventType.POLICY:
+        half_life *= _POLICY_HALF_LIFE_MULTIPLIER.get(policy_level, 1.0)
+
+    if trading_days_since <= 0:
         decay = 1.0
     else:
-        # decay = 0.5 ^ (days / half_life)
-        decay = math.pow(0.5, days_since_event / half_life)
+        # decay = 0.5 ^ (trading_days / half_life)
+        decay = math.pow(0.5, trading_days_since / half_life)
 
     return round(min(1.0, base * grade * decay), 4)
 
@@ -208,6 +327,10 @@ class StockEvent:
     ann_title: str = ""  # 触发公告标题 (Layer 1)
     concepts: tuple[str, ...] = ()  # 所属概念 (Layer 2)
     diffusion_rate: float = 0.0  # 板块扩散率 (Layer 3, 0-1)
+    # ── 事件强度建模 (v14) ──
+    policy_level: str = PolicyLevel.UNKNOWN  # 政策级别 (仅政策面有效)
+    order_amount_level: str = OrderAmountLevel.UNKNOWN  # 金额级别 (仅消息面有效)
+    order_amount_wan: float | None = None  # 解析出的金额 (万元)
 
 
 @dataclass(frozen=True)
