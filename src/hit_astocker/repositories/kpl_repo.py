@@ -28,6 +28,10 @@ def split_themes(raw: str) -> list[str]:
 
 
 class KplRepository(BaseRepository):
+    # ST stocks pollute theme/sector statistics — always exclude from analysis.
+    # Tushare limit_list_d already excludes ST; KPL should be consistent.
+    _EXCLUDE_ST = "AND name NOT LIKE '%ST%'"
+
     def __init__(self, conn: sqlite3.Connection):
         super().__init__(conn, "kpl_list")
 
@@ -38,16 +42,17 @@ class KplRepository(BaseRepository):
 
     def find_by_tag(self, trade_date: date, tag: str = "涨停") -> list[KplRecord]:
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
-        sql = "SELECT * FROM kpl_list WHERE trade_date = ? AND tag = ?"
+        sql = f"SELECT * FROM kpl_list WHERE trade_date = ? AND tag = ? {self._EXCLUDE_ST}"
         rows = self._conn.execute(sql, (date_str, tag)).fetchall()
         return [self._to_model(r) for r in rows]
 
     def get_themes_by_date(self, trade_date: date) -> dict[str, int]:
-        """Get per-theme stock counts for a date (themes are split)."""
+        """Get per-theme stock counts for a date (themes are split, ST excluded)."""
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
-        sql = """
+        sql = f"""
             SELECT theme FROM kpl_list
             WHERE trade_date = ? AND tag = '涨停' AND theme != ''
+            {self._EXCLUDE_ST}
         """
         rows = self._conn.execute(sql, (date_str,)).fetchall()
         counts: dict[str, int] = defaultdict(int)
@@ -57,7 +62,7 @@ class KplRepository(BaseRepository):
         return dict(counts)
 
     def get_themes_by_dates(self, trade_dates: list[date]) -> dict[str, int]:
-        """Get theme day-counts across multiple dates (themes are split).
+        """Get theme day-counts across multiple dates (themes are split, ST excluded).
 
         Returns {theme: number_of_distinct_days_it_appeared}.
         """
@@ -68,6 +73,7 @@ class KplRepository(BaseRepository):
         sql = f"""
             SELECT trade_date, theme FROM kpl_list
             WHERE trade_date IN ({placeholders}) AND tag = '涨停' AND theme != ''
+            {self._EXCLUDE_ST}
         """
         rows = self._conn.execute(sql, date_strs).fetchall()
         # theme -> set of dates it appeared
