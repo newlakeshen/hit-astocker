@@ -121,10 +121,18 @@ def sector_table(sector_result) -> Table:
     return table
 
 
+_SIGNAL_TYPE_LABELS = {
+    "FIRST_BOARD": "[bold red]首板[/]",
+    "FOLLOW_BOARD": "[bold yellow]连板[/]",
+    "SECTOR_LEADER": "[bold cyan]龙头[/]",
+}
+
+
 def signal_table(signals) -> Table:
     """Build trading signal table (enhanced with new factors)."""
     table = Table(title="打板信号 (10因子)", show_header=True, header_style="bold cyan")
     table.add_column("#", justify="right", width=3)
+    table.add_column("类型", width=4)
     table.add_column("代码", width=10)
     table.add_column("名称", width=8)
     table.add_column("评分", justify="right", width=6)
@@ -139,8 +147,10 @@ def signal_table(signals) -> Table:
         nb = sig.factors.get("northbound", 0)
         pop = sig.factors.get("stock_sentiment", 0)
         tech = sig.factors.get("technical_form", 0)
+        type_label = _SIGNAL_TYPE_LABELS.get(sig.signal_type.value, sig.signal_type.value)
         table.add_row(
             str(i),
+            type_label,
             sig.ts_code,
             sig.name,
             f"[{score_color(sig.composite_score)}]{sig.composite_score:.1f}[/]",

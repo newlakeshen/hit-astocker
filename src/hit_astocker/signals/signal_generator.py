@@ -77,6 +77,18 @@ class SignalGenerator:
     @staticmethod
     def _build_reason(candidate, sentiment, lianban, event_result=None) -> str:
         parts = []
+
+        # Signal-type specific lead reason
+        if candidate.signal_type == "FOLLOW_BOARD":
+            survival = candidate.factors.get("lianban_survival", 0)
+            if survival >= 70:
+                parts.append("连板晋级概率高")
+            else:
+                parts.append("连板跟进")
+        elif candidate.signal_type == "SECTOR_LEADER":
+            parts.append("板块龙头领涨")
+
+        # Common factor reasons
         if candidate.factors.get("sentiment", 0) >= 65:
             parts.append("市场情绪偏暖")
         if candidate.factors.get("seal_quality", 0) >= 70:
@@ -87,10 +99,8 @@ class SignalGenerator:
             parts.append("龙虎榜资金关注")
         if candidate.factors.get("capital_flow", 0) >= 70:
             parts.append("主力资金净流入")
-
         if candidate.factors.get("northbound", 0) >= 70:
             parts.append("北向资金买入")
-
         if candidate.factors.get("technical_form", 0) >= 75:
             parts.append("技术形态良好")
 

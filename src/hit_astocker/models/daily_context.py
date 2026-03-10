@@ -68,8 +68,18 @@ def build_daily_context(
     survival_model = BoardSurvivalAnalyzer(conn).compute_model(trade_date)
     hsgt_net_map = HsgtTop10Repository(conn).find_net_buyers_by_date(trade_date)
 
-    # Phase 2: dependent analyzers (need firstboard candidates)
-    candidate_codes = [fb.ts_code for fb in firstboard]
+    # Phase 2: dependent analyzers for ALL potential signal candidates
+    # (firstboard + lianban + theme leaders)
+    fb_codes = {fb.ts_code for fb in firstboard}
+    lianban_codes = set()
+    for tier in lianban.tiers:
+        for code in tier.stocks:
+            lianban_codes.add(code)
+    leader_codes = set()
+    for th in event.theme_heats:
+        for code in th.leader_codes:
+            leader_codes.add(code)
+    candidate_codes = list(fb_codes | lianban_codes | leader_codes)
     moneyflow = MoneyFlowAnalyzer(conn).analyze(trade_date, candidate_codes)
     stock_sentiments = StockSentimentAnalyzer(conn).analyze(trade_date, candidate_codes)
 
