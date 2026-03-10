@@ -1,10 +1,15 @@
-"""Market sentiment scoring engine.
+"""Market sentiment scoring engine (9-factor enhanced).
 
-Computes a composite sentiment score based on:
-- Limit-up vs limit-down ratio (涨停/跌停比)
-- Broken board rate (炸板率)
-- Consecutive board height and promotion rate (连板高度/晋级率)
-- Money effect scoring (赚钱效应)
+Factors:
+1. up_down_ratio (涨跌停比)
+2. broken_recovery (炸板/修复率)
+3. promotion_rate (总晋级率)
+4. height_promotion (高位晋级率: 2→3, 3→4)
+5. max_height (连板高度)
+6. prev_premium (昨日涨停次日溢价)
+7. yizi_ratio (一字板占比)
+8. board_structure (首板结构: 10cm/20cm)
+9. auction_strength (竞价强弱)
 """
 
 import sqlite3
@@ -15,6 +20,8 @@ from hit_astocker.config.constants import MAX_HEIGHT_NORM, SENTIMENT_LABELS
 from hit_astocker.config.settings import Settings, get_settings
 from hit_astocker.models.index_data import MarketContext
 from hit_astocker.models.sentiment import SentimentScore
+from hit_astocker.repositories.auction_repo import AuctionRepository
+from hit_astocker.repositories.daily_bar_repo import DailyBarRepository
 from hit_astocker.repositories.limit_repo import LimitListRepository
 from hit_astocker.repositories.limit_step_repo import LimitStepRepository
 from hit_astocker.utils.date_utils import get_previous_trading_day
@@ -24,21 +31,24 @@ class SentimentAnalyzer:
     def __init__(self, conn: sqlite3.Connection, settings: Settings | None = None):
         self._limit_repo = LimitListRepository(conn)
         self._step_repo = LimitStepRepository(conn)
+        self._bar_repo = DailyBarRepository(conn)
+        self._auction_repo = AuctionRepository(conn)
         self._market_ctx_analyzer = MarketContextAnalyzer(conn)
         self._settings = settings or get_settings()
 
     def analyze(self, trade_date: date) -> SentimentScore:
-        # 1. Count limit-up, limit-down, broken
+        s = self._settings
+
+        # ── Raw data collection ──
         counts = self._limit_repo.count_by_type(trade_date)
         up_count = counts.get("U", 0)
         down_count = counts.get("D", 0)
-        broken_count = counts.get("Z", 0)
+        broken_count_raw = counts.get("Z", 0)
 
-        # 2. Ratios
         up_down_ratio = up_count / max(down_count, 1)
-        broken_rate = broken_count / max(up_count + broken_count, 1)
+        broken_rate = broken_count_raw / max(up_count + broken_count_raw, 1)
 
-        # 3. Consecutive board analysis
+        # 连板分析
         max_height = self._step_repo.get_max_height(trade_date)
         height_counts = self._step_repo.get_height_counts(trade_date)
         total_lianban = sum(height_counts.values())
@@ -46,45 +56,103 @@ class SentimentAnalyzer:
             sum(h * c for h, c in height_counts.items()) / max(total_lianban, 1)
         )
 
-        # 4. Promotion rate (today's N+1 board count / yesterday's N board count)
+        # 总晋级率
         promotion_rate = self._compute_promotion_rate(trade_date)
 
-        # 5. Score components
-        s = self._settings
-        ratio_score = min(up_down_ratio / 5.0 * 100, 100)  # 5:1 ratio = 100
-        broken_score = (1 - broken_rate) * 100
-        promo_score = promotion_rate * 100
-        height_score = min(max_height / MAX_HEIGHT_NORM * 100, 100)
+        # 高位晋级率 (2→3, 3→4)
+        promo_2to3, promo_3to4 = self._compute_height_promotion(trade_date)
 
-        # First board trend (simplified: use up_count as proxy)
-        fb_trend_score = min(up_count / 60.0 * 100, 100)  # 60+ limit-ups = 100
+        # 炸板修复率
+        recovery_count, broken_stayed = self._limit_repo.count_recovery(trade_date)
+        total_broken_event = recovery_count + broken_stayed
+        broken_recovery_rate = recovery_count / max(total_broken_event, 1)
 
-        # 6. Weighted composite
+        # 一字板
+        yizi_count = self._limit_repo.count_yizi(trade_date)
+        yizi_ratio = yizi_count / max(up_count, 1)
+
+        # 10cm/20cm 结构
+        board_type = self._limit_repo.count_by_board_type(trade_date)
+
+        # 昨日涨停次日溢价
+        prev_premium = self._compute_prev_premium(trade_date)
+
+        # 竞价强弱
+        auction_stats = self._auction_repo.compute_auction_stats(trade_date)
+        auction_avg_pct = auction_stats.get("avg_pct", 0.0)
+        auction_up_ratio = auction_stats.get("up_ratio", 0.0)
+
+        # ── Factor scoring (each 0-100) ──
+
+        # F1: 涨跌停比 — 5:1 = 100
+        f_ratio = min(up_down_ratio / 5.0 * 100, 100)
+
+        # F2: 炸板修复率 — 高修复 = 好; 同时惩罚高炸板率
+        f_broken_recovery = broken_recovery_rate * 60 + (1 - broken_rate) * 40
+
+        # F3: 总晋级率
+        f_promo = promotion_rate * 100
+
+        # F4: 高位晋级率 — 2→3 和 3→4 的平均
+        avg_high_promo = (promo_2to3 + promo_3to4) / 2
+        f_height_promo = min(avg_high_promo / 0.5 * 100, 100)  # 50%晋级=100
+
+        # F5: 连板高度
+        f_height = min(max_height / MAX_HEIGHT_NORM * 100, 100)
+
+        # F6: 昨日涨停次日溢价 — [-3%, +5%] → [0, 100]
+        f_premium = max(0, min(100, (prev_premium + 3) / 8 * 100))
+
+        # F7: 一字板占比 — 适中最好 (10-25% = 100, 太高说明无参与机会)
+        if yizi_ratio <= 0.25:
+            f_yizi = min(yizi_ratio / 0.25 * 100, 100)
+        else:
+            # 超过25%开始递减 (一字太多 = 无法参与)
+            f_yizi = max(0, 100 - (yizi_ratio - 0.25) / 0.25 * 60)
+
+        # F8: 首板结构 — 20cm 占比高说明市场偏好题材股
+        total_up_board = board_type["10cm_up"] + board_type["20cm_up"]
+        if total_up_board > 0:
+            ratio_20cm = board_type["20cm_up"] / total_up_board
+            # 20cm涨停多 → 题材活跃; 10cm涨停多 → 价值轮动
+            # 评分基于总量 + 结构
+            volume_score = min(total_up_board / 40 * 60, 60)  # 40个涨停=60分
+            diversity_score = min(ratio_20cm / 0.4 * 40, 40)  # 20cm占40%=满分
+            f_board_struct = volume_score + diversity_score
+        else:
+            f_board_struct = 0
+
+        # F9: 竞价强弱 — 平均涨幅 + 高开比例
+        pct_part = max(0, min(60, (auction_avg_pct + 1) / 3 * 60))  # [-1%,+2%]→[0,60]
+        up_part = auction_up_ratio * 40  # 100%高开=40分
+        f_auction = pct_part + up_part
+
+        # ── Weighted composite ──
         money_effect = (
-            s.sentiment_up_down_ratio_weight * ratio_score
-            + s.sentiment_broken_rate_weight * broken_score
-            + s.sentiment_promotion_rate_weight * promo_score
-            + s.sentiment_max_height_weight * height_score
-            + s.sentiment_first_board_trend_weight * fb_trend_score
+            s.sentiment_up_down_ratio_weight * f_ratio
+            + s.sentiment_broken_recovery_weight * f_broken_recovery
+            + s.sentiment_promotion_rate_weight * f_promo
+            + s.sentiment_height_promotion_weight * f_height_promo
+            + s.sentiment_max_height_weight * f_height
+            + s.sentiment_prev_premium_weight * f_premium
+            + s.sentiment_yizi_ratio_weight * f_yizi
+            + s.sentiment_board_structure_weight * f_board_struct
+            + s.sentiment_auction_strength_weight * f_auction
         )
 
-        # 6b. Market context adjustment (大盘联动)
+        # Market context adjustment
         market_ctx = self._market_ctx_analyzer.analyze(trade_date)
         money_effect = self._apply_market_adjustment(money_effect, market_ctx)
-
         overall = max(0, min(100, money_effect))
 
-        # 7. Risk level
         risk_level = self._determine_risk(overall, broken_rate)
-
-        # 8. Description
         description = self._describe_market(overall)
 
         return SentimentScore(
             trade_date=trade_date,
             limit_up_count=up_count,
             limit_down_count=down_count,
-            broken_count=broken_count,
+            broken_count=broken_count_raw,
             up_down_ratio=round(up_down_ratio, 2),
             broken_rate=round(broken_rate, 4),
             max_consecutive_height=max_height,
@@ -94,17 +162,24 @@ class SentimentAnalyzer:
             overall_score=round(overall, 2),
             risk_level=risk_level,
             description=description,
+            prev_limit_up_premium=round(prev_premium, 2),
+            recovery_count=recovery_count,
+            broken_recovery_rate=round(broken_recovery_rate, 4),
+            yizi_count=yizi_count,
+            yizi_ratio=round(yizi_ratio, 4),
+            limit_up_10cm=board_type["10cm_up"],
+            limit_up_20cm=board_type["20cm_up"],
+            broken_10cm=board_type["10cm_broken"],
+            broken_20cm=board_type["20cm_broken"],
+            promo_rate_2to3=round(promo_2to3, 4),
+            promo_rate_3to4=round(promo_3to4, 4),
+            auction_avg_pct=round(auction_avg_pct, 2),
+            auction_up_ratio=round(auction_up_ratio, 4),
             market_context=market_ctx,
         )
 
     def _compute_promotion_rate(self, trade_date: date) -> float:
-        """Compute promotion rate by tracking individual stocks.
-
-        For each stock at height N yesterday, check if the **same stock**
-        is at height N+1 today.  This replaces the old aggregate-count
-        approximation which was inaccurate when stocks enter / exit the
-        consecutive-board ladder.
-        """
+        """Compute promotion rate by tracking individual stocks."""
         prev_date = get_previous_trading_day(trade_date)
         if prev_date is None:
             return 0.0
@@ -114,14 +189,60 @@ class SentimentAnalyzer:
             return 0.0
 
         today_heights = self._step_repo.get_stock_heights(trade_date)
-
         promoted = sum(
             1
             for code, prev_h in yesterday_heights.items()
             if today_heights.get(code) == prev_h + 1
         )
-
         return promoted / len(yesterday_heights)
+
+    def _compute_height_promotion(self, trade_date: date) -> tuple[float, float]:
+        """Compute (2→3晋级率, 3→4晋级率)."""
+        prev_date = get_previous_trading_day(trade_date)
+        if prev_date is None:
+            return 0.0, 0.0
+
+        yesterday_heights = self._step_repo.get_stock_heights(prev_date)
+        today_heights = self._step_repo.get_stock_heights(trade_date)
+
+        def _promo(from_h: int) -> float:
+            candidates = [c for c, h in yesterday_heights.items() if h == from_h]
+            if not candidates:
+                return 0.0
+            promoted = sum(1 for c in candidates if today_heights.get(c) == from_h + 1)
+            return promoted / len(candidates)
+
+        return _promo(2), _promo(3)
+
+    def _compute_prev_premium(self, trade_date: date) -> float:
+        """Compute average premium of yesterday's limit-up stocks at today's open.
+
+        prev_premium = avg((T open - T-1 close) / T-1 close * 100)
+        """
+        prev_date = get_previous_trading_day(trade_date)
+        if prev_date is None:
+            return 0.0
+
+        prev_closes = self._limit_repo.get_prev_limit_up_closes(prev_date)
+        if not prev_closes:
+            return 0.0
+
+        # Batch load today's bars for these stocks
+        codes = list(prev_closes.keys())
+        today_bars = self._bar_repo.find_recent_bars_batch(codes, trade_date, count=1)
+
+        premiums = []
+        for code, prev_close in prev_closes.items():
+            bars = today_bars.get(code, [])
+            if not bars or prev_close <= 0:
+                continue
+            today_bar = bars[-1]
+            if today_bar.trade_date != trade_date:
+                continue
+            premium = (today_bar.open - prev_close) / prev_close * 100
+            premiums.append(premium)
+
+        return sum(premiums) / len(premiums) if premiums else 0.0
 
     def _determine_risk(self, score: float, broken_rate: float) -> str:
         s = self._settings
@@ -135,18 +256,11 @@ class SentimentAnalyzer:
 
     @staticmethod
     def _apply_market_adjustment(score: float, ctx: MarketContext | None) -> float:
-        """Adjust sentiment score based on market index context.
-
-        - 大盘大跌 (index < -2%): penalty up to -15 points
-        - 大盘大涨 (index > +1.5%): bonus up to +10 points
-        - MA position: above MA20 → bonus, below MA20 → penalty
-        """
+        """Adjust sentiment score based on market index context."""
         if ctx is None:
             return score
 
         adjustment = 0.0
-
-        # Intraday index return impact
         avg_pct = (ctx.sh_pct_chg + ctx.gem_pct_chg) / 2
         if avg_pct <= -2.0:
             adjustment -= 15.0
@@ -157,7 +271,6 @@ class SentimentAnalyzer:
         elif avg_pct >= 1.0:
             adjustment += 5.0
 
-        # MA20 trend position: above MA20 = bullish environment
         if ctx.sh_ma20_ratio >= 1.02:
             adjustment += 5.0
         elif ctx.sh_ma20_ratio <= 0.97:

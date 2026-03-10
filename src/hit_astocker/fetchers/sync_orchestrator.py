@@ -9,6 +9,7 @@ from typing import Any
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from hit_astocker.config.settings import Settings
+from hit_astocker.fetchers.auction_fetcher import StockAuctionFetcher
 from hit_astocker.fetchers.daily_bar_fetcher import DailyBarFetcher
 from hit_astocker.fetchers.dragon_fetcher import DragonTigerFetcher, InstitutionalFetcher
 from hit_astocker.fetchers.hsgt_fetcher import HsgtTop10Fetcher
@@ -33,7 +34,9 @@ API_REGISTRY: list[tuple[str, str, type, dict[str, Any]]] = [
     ("limit_list_d_Z", "limit_list_d", BrokenBoardFetcher, {}),
     ("limit_step", "limit_step", StepFetcher, {}),
     ("limit_cpt_list", "limit_cpt_list", SectorFetcher, {}),
-    ("kpl_list", "kpl_list", KplFetcher, {"tag": "涨停"}),
+    ("kpl_list_涨停", "kpl_list", KplFetcher, {"tag": "涨停"}),
+    ("kpl_list_炸板", "kpl_list", KplFetcher, {"tag": "炸板"}),
+    ("kpl_list_跌停", "kpl_list", KplFetcher, {"tag": "跌停"}),
     ("top_list", "top_list", DragonTigerFetcher, {}),
     ("top_inst", "top_inst", InstitutionalFetcher, {}),
     ("moneyflow_ths", "moneyflow_ths", MoneyFlowFetcher, {}),
@@ -42,6 +45,7 @@ API_REGISTRY: list[tuple[str, str, type, dict[str, Any]]] = [
     ("index_daily", "index_daily", IndexDailyFetcher, {}),
     ("ths_hot", "ths_hot", ThsHotFetcher, {}),
     ("hsgt_top10", "hsgt_top10", HsgtTop10Fetcher, {}),
+    ("stk_auction", "stk_auction", StockAuctionFetcher, {}),
 ]
 
 

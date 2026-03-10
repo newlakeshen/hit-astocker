@@ -6,32 +6,70 @@ from hit_astocker.renderers.theme import format_amount, pct_color, risk_color, s
 
 
 def sentiment_table(sentiment) -> Table:
-    """Build sentiment overview table."""
-    table = Table(title="市场情绪概览", show_header=True, header_style="bold cyan")
-    table.add_column("指标", style="bold")
-    table.add_column("数值", justify="right")
+    """Build sentiment overview table (9-factor enhanced)."""
+    table = Table(title="市场情绪概览 (9因子)", show_header=True, header_style="bold cyan")
+    table.add_column("指标", style="bold", width=16)
+    table.add_column("数值", justify="right", width=12)
+    table.add_column("指标", style="bold", width=16)
+    table.add_column("数值", justify="right", width=12)
 
     s = sentiment
-    table.add_row("涨停家数", f"[bold red]{s.limit_up_count}[/]")
-    table.add_row("跌停家数", f"[bold green]{s.limit_down_count}[/]")
-    table.add_row("炸板家数", f"[yellow]{s.broken_count}[/]")
-    table.add_row("涨跌停比", f"{s.up_down_ratio:.2f}")
-    table.add_row("炸板率", f"{s.broken_rate:.1%}")
-    table.add_row("最高连板", f"[bold]{s.max_consecutive_height}[/] 板")
-    table.add_row("晋级率", f"{s.promotion_rate:.1%}")
+    # Row 1: 涨停 / 跌停
     table.add_row(
+        "涨停家数", f"[bold red]{s.limit_up_count}[/]",
+        "跌停家数", f"[bold green]{s.limit_down_count}[/]",
+    )
+    # Row 2: 炸板 / 回封
+    table.add_row(
+        "炸板家数", f"[yellow]{s.broken_count}[/]",
+        "回封数", f"[bold]{s.recovery_count}[/]",
+    )
+    # Row 3: 涨跌停比 / 炸板修复率
+    table.add_row(
+        "涨跌停比", f"{s.up_down_ratio:.2f}",
+        "炸板修复率", f"{s.broken_recovery_rate:.1%}",
+    )
+    # Row 4: 一字板 / 炸板率
+    table.add_row(
+        "一字板", f"{s.yizi_count} ({s.yizi_ratio:.0%})",
+        "炸板率", f"{s.broken_rate:.1%}",
+    )
+    # Row 5: 10cm / 20cm 涨停
+    table.add_row(
+        "10cm涨停/炸", f"[bold red]{s.limit_up_10cm}[/]/[yellow]{s.broken_10cm}[/]",
+        "20cm涨停/炸", f"[bold red]{s.limit_up_20cm}[/]/[yellow]{s.broken_20cm}[/]",
+    )
+    # Row 6: 连板高度 / 晋级率
+    table.add_row(
+        "最高连板", f"[bold]{s.max_consecutive_height}[/] 板",
+        "总晋级率", f"{s.promotion_rate:.1%}",
+    )
+    # Row 7: 2→3 / 3→4 晋级率
+    table.add_row(
+        "2→3板晋级", f"{s.promo_rate_2to3:.0%}",
+        "3→4板晋级", f"{s.promo_rate_3to4:.0%}",
+    )
+    # Row 8: 次日溢价 / 竞价强弱
+    premium_color = pct_color(s.prev_limit_up_premium)
+    table.add_row(
+        "昨涨停次日溢价", f"[{premium_color}]{s.prev_limit_up_premium:+.2f}%[/]",
+        "竞价均涨", f"[{pct_color(s.auction_avg_pct)}]{s.auction_avg_pct:+.2f}%[/]",
+    )
+    # Row 9: 竞价高开比 / 赚钱效应
+    table.add_row(
+        "竞价高开比", f"{s.auction_up_ratio:.0%}",
         "赚钱效应",
         f"[{score_color(s.money_effect_score)}]{s.money_effect_score:.1f}[/]",
     )
+    # Row 10: 综合评分 / 风险等级
     table.add_row(
         "综合评分",
         f"[{score_color(s.overall_score)}]{s.overall_score:.1f}[/]",
-    )
-    table.add_row(
         "风险等级",
         f"[{risk_color(s.risk_level)}]{s.risk_level}[/]",
     )
-    table.add_row("市场描述", s.description)
+    # Row 11: 描述
+    table.add_row("市场描述", s.description, "", "")
     return table
 
 

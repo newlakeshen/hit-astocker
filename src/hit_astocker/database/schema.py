@@ -294,6 +294,21 @@ TABLES = {
             PRIMARY KEY (trade_date, ts_code)
         )
     """,
+    "stk_auction": """
+        CREATE TABLE IF NOT EXISTS stk_auction (
+            trade_date TEXT NOT NULL,
+            ts_code TEXT NOT NULL,
+            name TEXT,
+            "open" REAL,
+            pre_close REAL,
+            "change" REAL,
+            pct_change REAL,
+            vol REAL,
+            amount REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (trade_date, ts_code)
+        )
+    """,
     "trade_cal": """
         CREATE TABLE IF NOT EXISTS trade_cal (
             cal_date TEXT NOT NULL PRIMARY KEY,
@@ -341,6 +356,7 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_hsgt_top10_code_date ON hsgt_top10(ts_code, trade_date)",
     "CREATE INDEX IF NOT EXISTS idx_stk_factor_date ON stk_factor_pro(trade_date)",
     "CREATE INDEX IF NOT EXISTS idx_stk_factor_code_date ON stk_factor_pro(ts_code, trade_date DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_stk_auction_date ON stk_auction(trade_date)",
     "CREATE INDEX IF NOT EXISTS idx_trade_cal_open ON trade_cal(is_open, cal_date)",
 ]
 

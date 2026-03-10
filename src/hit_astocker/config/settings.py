@@ -10,12 +10,16 @@ class Settings(BaseSettings):
     tushare_token: str = ""
     db_path: Path = Path("data/hit_astocker.db")
 
-    # Sentiment scoring weights (5-factor, sum=1)
-    sentiment_up_down_ratio_weight: float = 0.30
-    sentiment_broken_rate_weight: float = 0.25
-    sentiment_promotion_rate_weight: float = 0.20
-    sentiment_max_height_weight: float = 0.15
-    sentiment_first_board_trend_weight: float = 0.10
+    # Sentiment scoring weights (9-factor, sum=1)
+    sentiment_up_down_ratio_weight: float = 0.12       # 涨跌停比
+    sentiment_broken_recovery_weight: float = 0.12     # 炸板/修复率
+    sentiment_promotion_rate_weight: float = 0.10      # 总晋级率
+    sentiment_height_promotion_weight: float = 0.08    # 高位晋级率 (2→3, 3→4)
+    sentiment_max_height_weight: float = 0.08          # 连板高度
+    sentiment_prev_premium_weight: float = 0.18        # 昨日涨停次日溢价
+    sentiment_yizi_ratio_weight: float = 0.10          # 一字板占比
+    sentiment_board_structure_weight: float = 0.12     # 首板结构 (10cm/20cm)
+    sentiment_auction_strength_weight: float = 0.10    # 竞价强弱
 
     # Risk thresholds
     risk_extreme_score: float = 20.0
@@ -89,10 +93,14 @@ class Settings(BaseSettings):
         groups = {
             "sentiment": [
                 self.sentiment_up_down_ratio_weight,
-                self.sentiment_broken_rate_weight,
+                self.sentiment_broken_recovery_weight,
                 self.sentiment_promotion_rate_weight,
+                self.sentiment_height_promotion_weight,
                 self.sentiment_max_height_weight,
-                self.sentiment_first_board_trend_weight,
+                self.sentiment_prev_premium_weight,
+                self.sentiment_yizi_ratio_weight,
+                self.sentiment_board_structure_weight,
+                self.sentiment_auction_strength_weight,
             ],
             "first_board": [
                 self.first_board_seal_time_weight,
