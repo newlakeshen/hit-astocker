@@ -5,7 +5,10 @@ import pandas as pd
 from hit_astocker.fetchers.fetcher_base import FetcherBase
 from hit_astocker.fetchers.limit_fetcher import _safe_float
 
-FIELDS = "trade_date,ts_code,ts_name,rank,pct_change,concept,hot,market"
+FIELDS = (
+    "trade_date,ts_code,ts_name,data_type,current_price,"
+    "rank,pct_change,rank_reason,rank_time,concept,hot,market"
+)
 
 
 class ThsHotFetcher(FetcherBase):
@@ -24,8 +27,12 @@ class ThsHotFetcher(FetcherBase):
                 "trade_date": row.get("trade_date", ""),
                 "ts_code": row.get("ts_code", ""),
                 "ts_name": row.get("ts_name", "") or "",
+                "data_type": row.get("data_type", "") or "",
+                "current_price": _safe_float(row.get("current_price")),
                 "rank": int(row.get("rank", 0) or 0),
                 "pct_change": _safe_float(row.get("pct_change")),
+                "rank_reason": row.get("rank_reason", "") or "",
+                "rank_time": row.get("rank_time", "") or "",
                 "concept": row.get("concept", "") or "",
                 "hot": int(row.get("hot", 0) or 0),
                 "market": row.get("market", "") or "热股",

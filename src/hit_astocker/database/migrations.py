@@ -4,7 +4,15 @@ import sqlite3
 
 from hit_astocker.database.schema import init_schema
 
-CURRENT_VERSION = 5
+CURRENT_VERSION = 6
+
+# v6: ths_hot 补齐 data_type / current_price / rank_reason / rank_time
+_V6_ALTER_THS_HOT = [
+    "ALTER TABLE ths_hot ADD COLUMN data_type TEXT DEFAULT ''",
+    "ALTER TABLE ths_hot ADD COLUMN current_price REAL DEFAULT 0",
+    "ALTER TABLE ths_hot ADD COLUMN rank_reason TEXT DEFAULT ''",
+    "ALTER TABLE ths_hot ADD COLUMN rank_time TEXT DEFAULT ''",
+]
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -21,6 +29,15 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
     if current < CURRENT_VERSION:
         init_schema(conn)
+
+        # v6: add missing columns to existing ths_hot tables
+        if current < 6:
+            for sql in _V6_ALTER_THS_HOT:
+                try:
+                    conn.execute(sql)
+                except sqlite3.OperationalError:
+                    pass  # column already exists (fresh DB)
+
         conn.execute(
             "INSERT INTO _schema_version (version) VALUES (?)",
             (CURRENT_VERSION,),

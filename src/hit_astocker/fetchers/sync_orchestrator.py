@@ -115,8 +115,49 @@ class SyncOrchestrator:
                     results[api_name] = 0
                     self._log_sync(api_name, date_str, 0, "empty")
 
+        # Phase 3: On-demand per-stock APIs (stk_factor_pro)
+        stk_count = self._sync_stk_factors(date_str)
+        results["stk_factor_pro"] = stk_count
+
         self._conn.commit()
         return results
+
+    def _sync_stk_factors(self, date_str: str) -> int:
+        """Fetch stk_factor_pro for today's limit-up / consecutive-board candidates.
+
+        stk_factor_pro is a per-stock API, so we determine candidates from
+        already-synced bulk data, then fetch individually.
+        """
+        from hit_astocker.fetchers.stk_factor_fetcher import StockFactorFetcher
+
+        # Gather candidate codes from limit_list_d (涨停) + limit_step (连板)
+        lu_rows = self._conn.execute(
+            'SELECT DISTINCT ts_code FROM limit_list_d '
+            'WHERE trade_date = ? AND "limit" = ?',
+            (date_str, "U"),
+        ).fetchall()
+        step_rows = self._conn.execute(
+            "SELECT DISTINCT ts_code FROM limit_step WHERE trade_date = ?",
+            (date_str,),
+        ).fetchall()
+        candidate_codes = list(
+            {r["ts_code"] for r in lu_rows} | {r["ts_code"] for r in step_rows}
+        )
+        if not candidate_codes:
+            self._log_sync("stk_factor_pro", date_str, 0, "empty")
+            return 0
+
+        fetcher = StockFactorFetcher(self._client)
+        records = fetcher.fetch_for_codes(date_str, candidate_codes)
+        if records:
+            repo = BaseRepository(self._conn, "stk_factor_pro")
+            count = repo.upsert_many(records)
+            self._log_sync("stk_factor_pro", date_str, count, "success")
+            logger.info("stk_factor_pro: fetched %d records for %d candidates",
+                        count, len(candidate_codes))
+            return count
+        self._log_sync("stk_factor_pro", date_str, 0, "empty")
+        return 0
 
     def ensure_trade_calendar(self) -> None:
         """Sync trade_cal from Tushare if table is empty, then init singleton."""
