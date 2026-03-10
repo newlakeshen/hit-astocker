@@ -5,15 +5,10 @@ from datetime import date
 import typer
 from rich.console import Console
 
-from hit_astocker.analyzers.dragon_tiger import DragonTigerAnalyzer
-from hit_astocker.analyzers.event_classifier import EventClassifier
-from hit_astocker.analyzers.firstboard import FirstBoardAnalyzer
-from hit_astocker.analyzers.lianban import LianbanAnalyzer
-from hit_astocker.analyzers.sector_rotation import SectorRotationAnalyzer
-from hit_astocker.analyzers.sentiment import SentimentAnalyzer
 from hit_astocker.config.settings import get_settings
 from hit_astocker.database.connection import get_connection
 from hit_astocker.database.migrations import ensure_schema
+from hit_astocker.models.daily_context import build_daily_context
 from hit_astocker.renderers.dashboard import render_dashboard
 from hit_astocker.renderers.theme import APP_THEME
 from hit_astocker.signals.signal_generator import SignalGenerator
@@ -46,16 +41,19 @@ def daily(
             console.print(f"[yellow]No data for {trade_date}. Run 'hit-astocker sync -d {date_str or trade_date.strftime('%Y%m%d')}' first.[/]")
             raise typer.Exit(1)
 
-        # Run analyses sequentially (single connection — not thread-safe)
-        sentiment = SentimentAnalyzer(conn, settings).analyze(trade_date)
-        firstboard = FirstBoardAnalyzer(conn, settings).analyze(trade_date)
-        lianban = LianbanAnalyzer(conn).analyze(trade_date)
-        sector = SectorRotationAnalyzer(conn).analyze(trade_date)
-        dragon = DragonTigerAnalyzer(conn).analyze(trade_date)
-        event_result = EventClassifier(conn).analyze(trade_date)
-        signals = SignalGenerator(conn, settings).generate(trade_date)
+        # Build context ONCE — all analyzers run here
+        ctx = build_daily_context(conn, settings, trade_date)
+
+        # Generate signals from pre-computed context (no re-computation)
+        signals = SignalGenerator(conn, settings).generate_from_context(ctx)
 
         render_dashboard(
-            console, sentiment, firstboard, lianban, sector, dragon, signals,
-            event_result=event_result,
+            console,
+            ctx.sentiment,
+            list(ctx.firstboard),
+            ctx.lianban,
+            ctx.sector,
+            ctx.dragon,
+            signals,
+            event_result=ctx.event,
         )
