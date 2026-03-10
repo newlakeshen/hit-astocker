@@ -21,8 +21,8 @@ class StockFactorFetcher(FetcherBase):
     so we batch fetch for a list of candidate codes.
     """
 
-    def __init__(self, client, rate_limiter, ts_codes: list[str] | None = None):
-        super().__init__(client, rate_limiter)
+    def __init__(self, client, ts_codes: list[str] | None = None):
+        super().__init__(client)
         self._ts_codes = ts_codes or []
 
     def fetch_for_codes(self, date_str: str, ts_codes: list[str]) -> list[dict]:

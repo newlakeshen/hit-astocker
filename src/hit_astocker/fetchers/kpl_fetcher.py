@@ -7,8 +7,8 @@ from hit_astocker.fetchers.limit_fetcher import _safe_float
 
 
 class KplFetcher(FetcherBase):
-    def __init__(self, client, rate_limiter, tag: str = "涨停"):
-        super().__init__(client, rate_limiter)
+    def __init__(self, client, tag: str = "涨停"):
+        super().__init__(client)
         self._tag = tag
 
     def _call_api(self, date_str: str) -> pd.DataFrame:

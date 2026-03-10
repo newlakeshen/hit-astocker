@@ -48,8 +48,7 @@ class Settings(BaseSettings):
     # Board survival analysis
     survival_lookback_years: int = 10
 
-    # API rate limiting
-    api_calls_per_minute: int = 200
+    # API settings
     api_batch_size: int = 50
     api_timeout: int = 120
 

@@ -8,7 +8,6 @@ from typing import Any
 
 import pandas as pd
 
-from hit_astocker.fetchers.rate_limiter import RateLimiter
 from hit_astocker.fetchers.tushare_client import TushareClient
 from hit_astocker.utils.date_utils import to_tushare_date
 
@@ -19,9 +18,8 @@ RETRY_DELAYS = [1, 2, 4]  # seconds
 
 
 class FetcherBase(ABC):
-    def __init__(self, client: TushareClient, rate_limiter: RateLimiter):
+    def __init__(self, client: TushareClient):
         self._client = client
-        self._limiter = rate_limiter
 
     def fetch(self, trade_date: date) -> list[Any]:
         """Fetch data for a date with retry logic."""

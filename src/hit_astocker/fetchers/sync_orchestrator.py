@@ -17,7 +17,6 @@ from hit_astocker.fetchers.kpl_fetcher import KplFetcher
 from hit_astocker.fetchers.limit_fetcher import BrokenBoardFetcher, LimitDownFetcher, LimitUpFetcher
 from hit_astocker.fetchers.moneyflow_detail_fetcher import MoneyFlowDetailFetcher
 from hit_astocker.fetchers.moneyflow_fetcher import MoneyFlowFetcher
-from hit_astocker.fetchers.rate_limiter import RateLimiter
 from hit_astocker.fetchers.sector_fetcher import SectorFetcher
 from hit_astocker.fetchers.step_fetcher import StepFetcher
 from hit_astocker.fetchers.ths_hot_fetcher import ThsHotFetcher
@@ -48,11 +47,9 @@ API_REGISTRY: list[tuple[str, str, type, dict[str, Any]]] = [
 
 class SyncOrchestrator:
     def __init__(self, settings: Settings, conn: sqlite3.Connection):
-        self._limiter = RateLimiter(settings.api_calls_per_minute)
         self._client = TushareClient(
             settings.tushare_token,
             batch_size=settings.api_batch_size,
-            rate_limiter=self._limiter,
             timeout=settings.api_timeout,
         )
         self._conn = conn
@@ -73,7 +70,7 @@ class SyncOrchestrator:
 
                 task = progress.add_task(f"Syncing {api_name}...", total=None)
                 try:
-                    fetcher = fetcher_cls(self._client, self._limiter, **kwargs)
+                    fetcher = fetcher_cls(self._client, **kwargs)
                     records = fetcher.fetch(trade_date)
                     if records:
                         repo = BaseRepository(self._conn, table_name)
