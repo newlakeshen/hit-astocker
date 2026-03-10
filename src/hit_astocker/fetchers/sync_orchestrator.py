@@ -9,6 +9,7 @@ from typing import Any
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from hit_astocker.config.settings import Settings
+from hit_astocker.fetchers.ann_fetcher import AnnouncementFetcher
 from hit_astocker.fetchers.auction_fetcher import StockAuctionFetcher
 from hit_astocker.fetchers.daily_bar_fetcher import DailyBarFetcher
 from hit_astocker.fetchers.dragon_fetcher import DragonTigerFetcher, InstitutionalFetcher
@@ -46,6 +47,7 @@ API_REGISTRY: list[tuple[str, str, type, dict[str, Any]]] = [
     ("ths_hot", "ths_hot", ThsHotFetcher, {}),
     ("hsgt_top10", "hsgt_top10", HsgtTop10Fetcher, {}),
     ("stk_auction", "stk_auction", StockAuctionFetcher, {}),
+    ("anns_d", "anns_d", AnnouncementFetcher, {}),
 ]
 
 
@@ -123,6 +125,14 @@ class SyncOrchestrator:
         stk_count = self._sync_stk_factors(date_str)
         results["stk_factor_pro"] = stk_count
 
+        # Phase 4: On-demand concept membership (concept_detail)
+        concept_count = self._sync_concept_detail(date_str)
+        results["concept_detail"] = concept_count
+
+        # Phase 5: On-demand THS concept members (ths_member)
+        ths_count = self._sync_ths_members(date_str)
+        results["ths_member"] = ths_count
+
         self._conn.commit()
         return results
 
@@ -161,6 +171,92 @@ class SyncOrchestrator:
                         count, len(candidate_codes))
             return count
         self._log_sync("stk_factor_pro", date_str, 0, "empty")
+        return 0
+
+    def _sync_concept_detail(self, date_str: str) -> int:
+        """Fetch concept_detail for today's limit-up stocks (on-demand).
+
+        concept_detail is queried per stock code.  We only fetch for stocks
+        that are NOT already in the concept_detail table (cache-first).
+        """
+        from hit_astocker.fetchers.concept_fetcher import ConceptDetailFetcher
+
+        lu_rows = self._conn.execute(
+            'SELECT DISTINCT ts_code FROM limit_list_d '
+            'WHERE trade_date = ? AND "limit" = ?',
+            (date_str, "U"),
+        ).fetchall()
+        candidate_codes = [r["ts_code"] for r in lu_rows]
+        if not candidate_codes:
+            self._log_sync("concept_detail", date_str, 0, "empty")
+            return 0
+
+        # Filter out stocks already cached in concept_detail
+        placeholders = ",".join("?" * len(candidate_codes))
+        existing = self._conn.execute(
+            f"SELECT DISTINCT ts_code FROM concept_detail WHERE ts_code IN ({placeholders})",
+            candidate_codes,
+        ).fetchall()
+        existing_set = {r["ts_code"] for r in existing}
+        new_codes = [c for c in candidate_codes if c not in existing_set]
+
+        if not new_codes:
+            self._log_sync("concept_detail", date_str, 0, "cached")
+            return 0
+
+        fetcher = ConceptDetailFetcher(self._client)
+        records = fetcher.fetch_for_codes(new_codes)
+        if records:
+            repo = BaseRepository(self._conn, "concept_detail")
+            count = repo.upsert_many(records)
+            self._log_sync("concept_detail", date_str, count, "success")
+            logger.info("concept_detail: fetched %d records for %d new stocks",
+                        count, len(new_codes))
+            return count
+        self._log_sync("concept_detail", date_str, 0, "empty")
+        return 0
+
+    def _sync_ths_members(self, date_str: str) -> int:
+        """Fetch ths_member for active concept codes from ths_hot data.
+
+        Determines relevant THS concept codes from today's ths_hot records,
+        then fetches member lists for any concepts not yet cached.
+        """
+        from hit_astocker.fetchers.ths_member_fetcher import ThsMemberFetcher
+
+        # Get distinct concept codes from ths_hot (already synced)
+        hot_rows = self._conn.execute(
+            "SELECT DISTINCT ts_code FROM ths_hot WHERE trade_date = ?",
+            (date_str,),
+        ).fetchall()
+        concept_codes = [r["ts_code"] for r in hot_rows]
+        if not concept_codes:
+            self._log_sync("ths_member", date_str, 0, "empty")
+            return 0
+
+        # Filter out already-cached concepts
+        placeholders = ",".join("?" * len(concept_codes))
+        existing = self._conn.execute(
+            f"SELECT DISTINCT ts_code FROM ths_member WHERE ts_code IN ({placeholders})",
+            concept_codes,
+        ).fetchall()
+        existing_set = {r["ts_code"] for r in existing}
+        new_codes = [c for c in concept_codes if c not in existing_set]
+
+        if not new_codes:
+            self._log_sync("ths_member", date_str, 0, "cached")
+            return 0
+
+        fetcher = ThsMemberFetcher(self._client)
+        records = fetcher.fetch_for_concepts(new_codes)
+        if records:
+            repo = BaseRepository(self._conn, "ths_member")
+            count = repo.upsert_many(records)
+            self._log_sync("ths_member", date_str, count, "success")
+            logger.info("ths_member: fetched %d records for %d concepts",
+                        count, len(new_codes))
+            return count
+        self._log_sync("ths_member", date_str, 0, "empty")
         return 0
 
     def ensure_trade_calendar(self) -> None:

@@ -315,6 +315,42 @@ TABLES = {
             is_open INTEGER NOT NULL DEFAULT 0
         )
     """,
+    "anns_d": """
+        CREATE TABLE IF NOT EXISTS anns_d (
+            ann_date TEXT NOT NULL,
+            ts_code TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            ann_type TEXT DEFAULT '',
+            content TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (ann_date, ts_code, title)
+        )
+    """,
+    "concept_detail": """
+        CREATE TABLE IF NOT EXISTS concept_detail (
+            id TEXT NOT NULL,
+            concept_name TEXT,
+            ts_code TEXT NOT NULL,
+            name TEXT,
+            in_date TEXT DEFAULT '',
+            out_date TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (id, ts_code)
+        )
+    """,
+    "ths_member": """
+        CREATE TABLE IF NOT EXISTS ths_member (
+            ts_code TEXT NOT NULL,
+            code TEXT NOT NULL,
+            name TEXT,
+            weight REAL DEFAULT 0,
+            in_date TEXT DEFAULT '',
+            out_date TEXT DEFAULT '',
+            is_new TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (ts_code, code)
+        )
+    """,
     "sync_log": """
         CREATE TABLE IF NOT EXISTS sync_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -358,6 +394,13 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_stk_factor_code_date ON stk_factor_pro(ts_code, trade_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_stk_auction_date ON stk_auction(trade_date)",
     "CREATE INDEX IF NOT EXISTS idx_trade_cal_open ON trade_cal(is_open, cal_date)",
+    "CREATE INDEX IF NOT EXISTS idx_anns_d_date ON anns_d(ann_date)",
+    "CREATE INDEX IF NOT EXISTS idx_anns_d_code ON anns_d(ts_code)",
+    "CREATE INDEX IF NOT EXISTS idx_anns_d_code_date ON anns_d(ts_code, ann_date)",
+    "CREATE INDEX IF NOT EXISTS idx_concept_detail_code ON concept_detail(ts_code)",
+    "CREATE INDEX IF NOT EXISTS idx_concept_detail_name ON concept_detail(concept_name)",
+    "CREATE INDEX IF NOT EXISTS idx_ths_member_code ON ths_member(code)",
+    "CREATE INDEX IF NOT EXISTS idx_ths_member_concept ON ths_member(ts_code)",
 ]
 
 

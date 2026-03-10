@@ -98,7 +98,7 @@ EVENT_WEIGHTS: dict[str, float] = {
 
 @dataclass(frozen=True)
 class StockEvent:
-    """单只股票的涨停事件分类结果."""
+    """单只股票的涨停事件分类结果 (三层识别)."""
 
     ts_code: str
     name: str
@@ -108,6 +108,11 @@ class StockEvent:
     event_weight: float  # 事件权重 (0-1)
     theme: str  # 题材
     themes: tuple[str, ...]  # 拆分后的多题材
+    # ── 三层识别增强 ──
+    event_layer: str = "KEYWORD"  # ANNOUNCEMENT / CONCEPT / KEYWORD
+    ann_title: str = ""  # 触发公告标题 (Layer 1)
+    concepts: tuple[str, ...] = ()  # 所属概念 (Layer 2)
+    diffusion_rate: float = 0.0  # 板块扩散率 (Layer 3, 0-1)
 
 
 @dataclass(frozen=True)

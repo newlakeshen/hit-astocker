@@ -75,6 +75,17 @@ def _render_event_distribution(result) -> None:
 
     console.print(table)
 
+    # Layer coverage breakdown
+    layer_dist: dict[str, int] = {}
+    for ev in result.stock_events:
+        layer_dist[ev.event_layer] = layer_dist.get(ev.event_layer, 0) + 1
+    if layer_dist and total > 0:
+        parts = []
+        for layer, cnt in sorted(layer_dist.items(), key=lambda x: -x[1]):
+            label = {"ANNOUNCEMENT": "公告", "CONCEPT": "概念", "KEYWORD": "关键词"}.get(layer, layer)
+            parts.append(f"{label} {cnt}({cnt / total * 100:.0f}%)")
+        console.print(f"  识别层分布: {' | '.join(parts)}")
+
 
 def _render_theme_heat(result) -> None:
     if not result.theme_heats:
