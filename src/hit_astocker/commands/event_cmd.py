@@ -91,15 +91,18 @@ def _render_theme_heat(result) -> None:
     if not result.theme_heats:
         return
 
-    table = Table(title="题材热度追踪", header_style="bold cyan")
+    table = Table(title="题材热度追踪 (多维评分)", header_style="bold cyan")
     table.add_column("#", justify="right", width=3)
-    table.add_column("题材", width=12)
-    table.add_column("今日", justify="right", width=5)
-    table.add_column("昨日", justify="right", width=5)
-    table.add_column("持续", justify="right", width=5)
+    table.add_column("题材", width=10)
+    table.add_column("数量", justify="right", width=5)
+    table.add_column("高度", justify="right", width=4)
     table.add_column("趋势", width=8)
-    table.add_column("热度", justify="right", width=7)
-    table.add_column("龙头", width=24)
+    table.add_column("热度", justify="right", width=5)
+    table.add_column("主线", justify="right", width=5)
+    table.add_column("龙头", justify="right", width=5)
+    table.add_column("扩散", justify="right", width=5)
+    table.add_column("参与", justify="right", width=5)
+    table.add_column("领涨", width=18)
 
     trend_styles = {
         "HEATING": "[bold red]升温↑[/]",
@@ -111,14 +114,18 @@ def _render_theme_heat(result) -> None:
     for i, th in enumerate(result.theme_heats[:15], 1):
         trend = trend_styles.get(th.heat_trend, th.heat_trend)
         leaders = ", ".join(th.leader_names[:3])
+        height_str = f"{th.max_height}板" if th.max_height > 1 else "首板"
         table.add_row(
             str(i),
-            th.theme_name[:6],
-            str(th.today_count),
-            str(th.yesterday_count),
-            f"{th.persistence_days}天",
+            th.theme_name[:5],
+            f"{th.today_count}({th.yesterday_count})",
+            height_str,
             trend,
             f"[{score_color(th.heat_score)}]{th.heat_score:.0f}[/]",
+            f"[{score_color(th.height_score)}]{th.height_score:.0f}[/]",
+            f"[{score_color(th.leader_score)}]{th.leader_score:.0f}[/]",
+            f"[{score_color(th.expansion_score)}]{th.expansion_score:.0f}[/]",
+            f"[{score_color(th.participation_score)}]{th.participation_score:.0f}[/]",
             leaders,
         )
 

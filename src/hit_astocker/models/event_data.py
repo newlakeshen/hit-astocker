@@ -82,18 +82,113 @@ EVENT_KEYWORDS: dict[str, str] = {
     "订单": EventType.NEWS,
 }
 
-# 事件类型权重：强催化 > 弱催化
-EVENT_WEIGHTS: dict[str, float] = {
-    EventType.POLICY: 1.0,  # 政策面最强
-    EventType.RESTRUCTURE: 0.95,  # 重组并购持续性强
-    EventType.EARNINGS: 0.85,  # 业绩面有基本面支撑
-    EventType.INDUSTRY: 0.80,  # 行业面持续性好
-    EventType.NEWS: 0.75,  # 消息面催化
-    EventType.CONCEPT: 0.65,  # 概念炒作短期为主
-    EventType.CAPITAL: 0.60,  # 资金面可能只是跟风
-    EventType.TECHNICAL: 0.50,  # 技术面最弱
-    EventType.UNKNOWN: 0.40,  # 未知原因
+# 事件类型基础强度 (peak weight, 无衰减时的上限)
+EVENT_BASE_STRENGTH: dict[str, float] = {
+    EventType.POLICY: 1.0,       # 政策面最强
+    EventType.RESTRUCTURE: 0.95, # 重组并购持续性强
+    EventType.EARNINGS: 0.85,    # 业绩面有基本面支撑
+    EventType.INDUSTRY: 0.80,    # 行业面持续性好
+    EventType.NEWS: 0.75,        # 消息面催化
+    EventType.CONCEPT: 0.65,     # 概念炒作短期为主
+    EventType.CAPITAL: 0.60,     # 资金面可能只是跟风
+    EventType.TECHNICAL: 0.50,   # 技术面最弱
+    EventType.UNKNOWN: 0.40,     # 未知原因
 }
+
+# 向后兼容: 旧代码引用 EVENT_WEIGHTS 的地方不受影响
+EVENT_WEIGHTS = EVENT_BASE_STRENGTH
+
+# ── 事件衰减半衰期 (天数) ──
+# 半衰期 = 事件影响力衰减到 50% 所需的交易日数
+# 政策/重组: 长尾效应 (市场反复炒作); 概念/消息: 短命 (一两天就过气)
+EVENT_DECAY_HALF_LIVES: dict[str, float] = {
+    EventType.POLICY: 5.0,       # 政策面: 5个交易日半衰 (国家级可持续)
+    EventType.RESTRUCTURE: 7.0,  # 重组并购: 7天半衰 (流程长, 反复发酵)
+    EventType.EARNINGS: 3.0,     # 业绩面: 3天半衰 (市场消化快)
+    EventType.INDUSTRY: 4.0,     # 行业面: 4天半衰 (景气周期较持续)
+    EventType.NEWS: 2.0,         # 消息面: 2天半衰 (来得快去得快)
+    EventType.CONCEPT: 1.5,      # 概念炒作: 1.5天半衰 (最短命)
+    EventType.CAPITAL: 1.0,      # 资金面: 1天半衰 (资金来去无踪)
+    EventType.TECHNICAL: 1.0,    # 技术面: 1天半衰
+    EventType.UNKNOWN: 1.0,      # 未知: 1天半衰
+}
+
+# ── 事件级别关键词 → 级别乘数 ──
+# 同一事件类型内部也有强弱: 国务院发文 >> 地方补贴; 净利润翻倍 >> 小幅预增
+# 级别: S=1.0 (重磅), A=0.85 (较强), B=0.70 (一般), C=0.55 (偏弱)
+EVENT_GRADE_KEYWORDS: dict[str, list[tuple[str, float]]] = {
+    EventType.POLICY: [
+        # S级: 国家级/央行/部委
+        ("国务院", 1.0), ("央行", 1.0), ("降息", 1.0), ("降准", 1.0),
+        ("发改委", 0.95), ("财政", 0.90),
+        # A级: 部委/规划
+        ("规划", 0.85), ("战略", 0.85), ("改革", 0.85),
+        # B级: 普通政策
+        ("政策", 0.70), ("补贴", 0.70),
+    ],
+    EventType.EARNINGS: [
+        # S级: 大幅增长
+        ("扭亏", 1.0), ("预增", 0.95), ("翻倍", 1.0), ("暴增", 1.0),
+        # A级: 业绩改善
+        ("高送转", 0.85), ("净利润", 0.85),
+        # B级: 常规
+        ("业绩", 0.70), ("营收", 0.70), ("分红", 0.65),
+        ("季报", 0.60), ("年报", 0.60),
+    ],
+    EventType.RESTRUCTURE: [
+        # S级: 重大重组
+        ("借壳", 1.0), ("注入", 0.95),
+        # A级: 并购重组
+        ("并购", 0.85), ("重组", 0.85), ("收购", 0.80),
+        # B级: 资产相关
+        ("资产", 0.70), ("股权转让", 0.70),
+    ],
+    EventType.NEWS: [
+        # A级: 重大合同/订单
+        ("中标", 0.85), ("订单", 0.85), ("签约", 0.80),
+        # B级: 一般消息
+        ("合作", 0.70), ("公告", 0.60), ("专利", 0.65),
+    ],
+}
+
+
+def compute_event_weight(
+    event_type: str,
+    days_since_event: int = 0,
+    event_text: str = "",
+) -> float:
+    """动态事件权重 = 基础强度 × 事件级别 × 时间衰减.
+
+    Parameters
+    ----------
+    event_type : 事件类型 (EventType.*)
+    days_since_event : 事件发布距今的交易日数 (0=当日)
+    event_text : 公告标题/涨停原因, 用于匹配事件级别
+
+    Returns
+    -------
+    float : 动态权重 (0-1), 已乘以衰减
+    """
+    import math
+
+    base = EVENT_BASE_STRENGTH.get(event_type, 0.40)
+
+    # ── 1. 事件级别 (grade) ──
+    grade = 0.70  # 默认 B 级
+    grade_keywords = EVENT_GRADE_KEYWORDS.get(event_type, [])
+    for keyword, kw_grade in grade_keywords:
+        if keyword in event_text:
+            grade = max(grade, kw_grade)  # 取最高匹配级别
+
+    # ── 2. 时间衰减 (exponential half-life decay) ──
+    half_life = EVENT_DECAY_HALF_LIVES.get(event_type, 1.0)
+    if days_since_event <= 0:
+        decay = 1.0
+    else:
+        # decay = 0.5 ^ (days / half_life)
+        decay = math.pow(0.5, days_since_event / half_life)
+
+    return round(min(1.0, base * grade * decay), 4)
 
 
 @dataclass(frozen=True)
@@ -125,12 +220,18 @@ class ThemeHeat:
     persistence_days: int  # 连续上榜天数
     heat_trend: str  # HEATING / STABLE / COOLING / NEW
     heat_score: float  # 综合热度评分 (0-100)
-    leader_codes: tuple[str, ...]  # 龙头股票代码
+    leader_codes: tuple[str, ...]  # 龙头股票代码 (按高度+封单排序)
     leader_names: tuple[str, ...]  # 龙头股票名称
     # ── 生命周期 + 拥挤度 (v12) ──
     lifecycle: str = "NEW"        # NEW / HEATING / PEAK / FADING
     crowding_ratio: float = 0.0   # 拥挤度: 涨停数/板块成分总数 (0-1, 高=危险)
     crowding_penalty: float = 0.0 # 拥挤度惩罚 (0-30, 从热度中扣除)
+    # ── 多维热度子分 (v13) ──
+    max_height: int = 1           # 主线最高连板高度 (default=首板)
+    height_score: float = 0.0     # 主线高度得分 (0-100)
+    leader_score: float = 0.0     # 龙头强度得分 (0-100)
+    expansion_score: float = 0.0  # 扩散速度得分 (0-100)
+    participation_score: float = 0.0  # 可参与度得分 (0-100, 非一字板占比)
 
 
 @dataclass(frozen=True)
