@@ -28,7 +28,6 @@ class FetcherBase(ABC):
         date_str = to_tushare_date(trade_date)
         for attempt in range(MAX_RETRIES):
             try:
-                self._limiter.acquire()
                 df = self._call_api(date_str)
                 if df.empty:
                     return []

@@ -48,8 +48,13 @@ API_REGISTRY: list[tuple[str, str, type, dict[str, Any]]] = [
 
 class SyncOrchestrator:
     def __init__(self, settings: Settings, conn: sqlite3.Connection):
-        self._client = TushareClient(settings.tushare_token)
         self._limiter = RateLimiter(settings.api_calls_per_minute)
+        self._client = TushareClient(
+            settings.tushare_token,
+            batch_size=settings.api_batch_size,
+            rate_limiter=self._limiter,
+            timeout=settings.api_timeout,
+        )
         self._conn = conn
 
     def sync_date(self, trade_date: date, apis: list[str] | None = None) -> dict[str, int]:

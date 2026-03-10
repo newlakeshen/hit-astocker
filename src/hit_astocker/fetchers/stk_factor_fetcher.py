@@ -30,7 +30,6 @@ class StockFactorFetcher(FetcherBase):
         all_records = []
         for code in ts_codes:
             try:
-                self._limiter.acquire()
                 df = self._client.query(
                     "stk_factor_pro",
                     ts_code=code,

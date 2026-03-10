@@ -50,6 +50,8 @@ class Settings(BaseSettings):
 
     # API rate limiting
     api_calls_per_minute: int = 200
+    api_batch_size: int = 50
+    api_timeout: int = 120
 
     model_config = {"env_prefix": "", "env_file": ".env", "extra": "ignore"}
 
