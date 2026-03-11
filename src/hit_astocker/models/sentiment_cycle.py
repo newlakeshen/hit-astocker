@@ -54,11 +54,11 @@ class SentimentCycle:
     score_ma5: float          # 5日情绪滑动均线
     score_delta: float        # 一阶导: T - T-1 (正=改善)
     score_accel: float        # 二阶导: delta_T - delta_{T-1} (正=加速改善)
-    premium_trend: float      # 溢价3日趋势斜率 (正=溢价回升)
+    premium_trend: float      # 保留字段, 始终为 0.0 (历史溢价无法轻量计算)
     broken_rate_trend: float  # 炸板率3日趋势斜率 (正=恶化)
     # ── 近期序列 (最新在前, 最多5日) ──
     recent_scores: tuple[float, ...]
-    recent_premiums: tuple[float, ...]
+    recent_premiums: tuple[float, ...]  # 仅含当日溢价 (历史溢价需 DailyBar, 不在此计算)
     recent_broken_rates: tuple[float, ...]
     # ── 转折信号 ──
     is_turning_point: bool    # 是否处于拐点 (修复首日 / 退潮首日)

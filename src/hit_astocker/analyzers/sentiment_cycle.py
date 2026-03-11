@@ -4,8 +4,8 @@ Runs lightweight sentiment scoring for recent 5 trading days to determine
 the current phase of the A-share 打板 emotion cycle.  The core insight:
 same absolute score with different *direction* means different strategy.
 
-Uses only limit_list_d / limit_step / daily_bar — data that is always
-available when the user has synced even once.
+Uses only limit_list_d / limit_step — data that is always available
+when the user has synced even once.
 """
 
 import sqlite3
@@ -25,7 +25,6 @@ class _DayMetrics:
 
     score: float          # simplified sentiment score (0-100)
     broken_rate: float    # 炸板率 (0-1)
-    premium: float        # placeholder (filled when available)
     max_height: int       # 最高连板高度
 
 
@@ -45,9 +44,8 @@ class SentimentCycleDetector:
         for d in recent_days:
             history.append(self._compute_light_metrics(d))
 
-        # Build score / premium / broken_rate series (newest first)
+        # Build score / broken_rate series (newest first)
         scores = [current.overall_score] + [m.score for m in history]
-        premiums = [current.prev_limit_up_premium] + [m.premium for m in history]
         broken_rates = [current.broken_rate] + [m.broken_rate for m in history]
 
         n = len(scores)
@@ -61,9 +59,6 @@ class SentimentCycleDetector:
         prev_delta = scores[1] - scores[2] if n >= 3 else 0.0
         accel = delta - prev_delta
 
-        # ── Premium trend (3-day linear slope) ──
-        premium_trend = _simple_slope(premiums[:min(3, n)])
-
         # ── Broken-rate trend (3-day linear slope, positive = worsening) ──
         broken_rate_trend = _simple_slope(broken_rates[:min(3, n)])
 
@@ -75,8 +70,6 @@ class SentimentCycleDetector:
             ma3=ma3,
             broken_rate=broken_rates[0],
             broken_rate_trend=broken_rate_trend,
-            premium_trend=premium_trend,
-            premium=premiums[0],
         )
 
         # ── Turning point detection ──
@@ -87,15 +80,13 @@ class SentimentCycleDetector:
             ma3=sum(scores[1:min(4, n)]) / min(3, max(1, n - 1)) if n >= 2 else scores[0],
             broken_rate=broken_rates[1] if n >= 2 else broken_rates[0],
             broken_rate_trend=0.0,
-            premium_trend=0.0,
-            premium=premiums[1] if n >= 2 else premiums[0],
         ) if n >= 2 else phase
 
         is_turning = phase != prev_phase and phase in (
             CyclePhase.REPAIR, CyclePhase.RETREAT, CyclePhase.DIVERGE,
         )
 
-        desc = self._build_description(phase, delta, premium_trend, broken_rate_trend)
+        desc = self._build_description(phase, delta, broken_rate_trend)
 
         return SentimentCycle(
             phase=phase,
@@ -103,10 +94,10 @@ class SentimentCycleDetector:
             score_ma5=round(ma5, 2),
             score_delta=round(delta, 2),
             score_accel=round(accel, 2),
-            premium_trend=round(premium_trend, 2),
+            premium_trend=0.0,
             broken_rate_trend=round(broken_rate_trend, 4),
             recent_scores=tuple(round(s, 2) for s in scores),
-            recent_premiums=tuple(round(p, 2) for p in premiums),
+            recent_premiums=(round(current.prev_limit_up_premium, 2),),
             recent_broken_rates=tuple(round(b, 4) for b in broken_rates),
             is_turning_point=is_turning,
             phase_description=desc,
@@ -137,26 +128,11 @@ class SentimentCycleDetector:
 
         score = f_ratio * 0.35 + f_broken * 0.40 + f_height * 0.25
 
-        # Premium: compute if previous day exists
-        premium = self._compute_light_premium(trade_date)
-
         return _DayMetrics(
             score=round(score, 2),
             broken_rate=round(broken_rate, 4),
-            premium=round(premium, 2),
             max_height=max_height,
         )
-
-    @staticmethod
-    def _compute_light_premium(_trade_date: date) -> float:
-        """Return 0.0 — premium for historical days is not computed here.
-
-        Today's premium comes from SentimentScore.prev_limit_up_premium
-        (passed via `current` parameter).  Historical premiums are left as 0
-        to avoid adding a DailyBarRepository dependency; the trend slope is
-        therefore driven primarily by today's value vs zeros.
-        """
-        return 0.0
 
     # ── Phase determination logic ────────────────────────────────────
 
@@ -169,8 +145,6 @@ class SentimentCycleDetector:
         ma3: float,
         broken_rate: float,
         broken_rate_trend: float,
-        premium_trend: float,
-        premium: float,
     ) -> CyclePhase:
         """Determine emotion cycle phase from quantitative signals.
 
@@ -223,7 +197,6 @@ class SentimentCycleDetector:
     def _build_description(
         phase: CyclePhase,
         delta: float,
-        premium_trend: float,
         broken_rate_trend: float,
     ) -> str:
         """Build human-readable phase description."""
@@ -240,11 +213,6 @@ class SentimentCycleDetector:
             parts.append("情绪小幅走弱")
         else:
             parts.append("情绪持平")
-
-        if premium_trend > 1.0:
-            parts.append("溢价回升")
-        elif premium_trend < -1.0:
-            parts.append("溢价走弱")
 
         if broken_rate_trend > 0.05:
             parts.append("炸板率上升")
