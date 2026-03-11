@@ -46,7 +46,7 @@ def event(
 
         # Per-stock sentiment
         sentiment_analyzer = StockSentimentAnalyzer(conn)
-        stock_scores = sentiment_analyzer.analyze(trade_date)
+        stock_scores = sentiment_analyzer.analyze(trade_date, event_result=result)
         if stock_scores:
             _render_stock_sentiment(stock_scores)
 
@@ -82,7 +82,11 @@ def _render_event_distribution(result) -> None:
     if layer_dist and total > 0:
         parts = []
         for layer, cnt in sorted(layer_dist.items(), key=lambda x: -x[1]):
-            label = {"ANNOUNCEMENT": "公告", "CONCEPT": "概念", "KEYWORD": "关键词"}.get(layer, layer)
+            label = {
+                "ANNOUNCEMENT": "公告",
+                "CONCEPT": "概念",
+                "KEYWORD": "关键词",
+            }.get(layer, layer)
             parts.append(f"{label} {cnt}({cnt / total * 100:.0f}%)")
         console.print(f"  识别层分布: {' | '.join(parts)}")
 

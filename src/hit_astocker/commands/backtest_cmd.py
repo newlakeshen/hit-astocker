@@ -13,6 +13,9 @@ Trade lifecycle: T signal → T+1 buy → T+2 sell (A-share T+1 rule).
 
 import logging
 import math
+import sqlite3
+from dataclasses import dataclass
+from datetime import date
 
 import typer
 from rich.console import Console
@@ -30,13 +33,15 @@ from hit_astocker.models.backtest import (
     SkippedSignal,
     TradeResult,
 )
-from hit_astocker.models.daily_context import DataCoverage, build_daily_context, table_has_data
+from hit_astocker.models.daily_context import DailyContextCaches, build_daily_context
 from hit_astocker.renderers.theme import APP_THEME, pct_color, risk_color, score_color
 from hit_astocker.signals.signal_generator import SignalGenerator
 from hit_astocker.utils.date_utils import (
     from_tushare_date,
     get_next_trading_day,
     get_trading_days_between,
+    shift_years,
+    to_tushare_date,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,11 +78,51 @@ _SKIP_LABELS = {
     "LOW_FILL_RATE": "换手过低",
 }
 
+_OPTIONAL_COVERAGE_SOURCES = (
+    ("ths_hot", "同花顺热股", "trade_date"),
+    ("hsgt_top10", "北向资金", "trade_date"),
+    ("stk_factor_pro", "技术因子", "trade_date"),
+    ("hm_detail", "游资席位", "trade_date"),
+    ("stk_auction", "集合竞价", "trade_date"),
+    ("anns_d", "公告", "ann_date"),
+)
+
+
+@dataclass(frozen=True)
+class CoverageBucket:
+    label: str
+    covered_days: int
+    total_days: int
+
+    @property
+    def ratio(self) -> float:
+        return self.covered_days / self.total_days if self.total_days else 0.0
+
+
+@dataclass(frozen=True)
+class BacktestRangeCoverage:
+    requested_days: int
+    executable_days: int
+    buckets: tuple[CoverageBucket, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedBacktestWindow:
+    start_date: date
+    end_date: date
+    start_label: str
+    end_label: str
+    requested_years: int | None = None
+    truncated: bool = False
+    available_start: date | None = None
+    available_end: date | None = None
+
 
 @backtest_app.callback(invoke_without_command=True)
 def backtest(
-    start: str = typer.Option(..., "--start", "-s", help="起始日期 (YYYYMMDD)"),
-    end: str = typer.Option(..., "--end", "-e", help="结束日期 (YYYYMMDD)"),
+    start: str | None = typer.Option(None, "--start", "-s", help="起始日期 (YYYYMMDD)"),
+    end: str | None = typer.Option(None, "--end", "-e", help="结束日期 (YYYYMMDD)"),
+    years: int = typer.Option(6, "--years", help="未指定起止日期时，默认回测近 N 年"),
     mode: str = typer.Option(
         "AUCTION", "--mode", "-m",
         help="执行方式: AUCTION / WEAK_TO_STRONG / RE_SEAL",
@@ -91,8 +136,6 @@ def backtest(
 ):
     """真实打板回测: T信号 → T+1买入 → T+2卖出, 含摩擦成本."""
     settings = get_settings()
-    start_date = from_tushare_date(start)
-    end_date = from_tushare_date(end)
 
     try:
         exec_mode = ExecutionMode(mode.upper())
@@ -121,34 +164,33 @@ def backtest(
 
     with get_connection(settings.db_path) as conn:
         ensure_schema(conn)
+        window = _resolve_backtest_window(conn, start, end, years)
+        start_date = window.start_date
+        end_date = window.end_date
 
-        # One-time data coverage check
-        coverage = DataCoverage(
-            has_ths_hot=table_has_data(conn, "ths_hot"),
-            has_hsgt=table_has_data(conn, "hsgt_top10"),
-            has_stk_factor=table_has_data(conn, "stk_factor_pro"),
-            has_hm=table_has_data(conn, "hm_detail"),
-            has_auction=table_has_data(conn, "stk_auction"),
-        )
-        if coverage.missing_sources:
-            missing = ", ".join(coverage.missing_sources)
+        if window.truncated and window.available_start and window.available_end:
             console.print(
-                f"[yellow]  ⚠ 数据缺失: {missing}[/]\n"
-                "[dim]  对应因子已从评分权重中剔除。[/]\n"
+                f"[yellow]  ⚠ 当前核心行情仅覆盖 {window.available_start} ~ "
+                f"{window.available_end}，不足近 {window.requested_years} 年。[/]\n"
+                f"[dim]  本次按可用区间 {window.start_date} ~ {window.end_date} 回测。"
+                f" 如需近 {window.requested_years} 年，请先运行 "
+                f"'hit-astocker sync --years {window.requested_years}'。[/]\n"
             )
 
         generator = SignalGenerator(conn, settings)
         engine = BacktestEngine(conn)
+        context_caches = DailyContextCaches()
 
         all_trades: list[TradeResult] = []
         all_skipped: list[SkippedSignal] = []
         total_signals = 0
 
         trading_dates = get_trading_days_between(start_date, end_date)
+        range_coverage = _collect_range_coverage(conn, trading_dates)
 
         for d in trading_dates:
             try:
-                ctx = build_daily_context(conn, settings, d)
+                ctx = build_daily_context(conn, settings, d, caches=context_caches)
                 signals = generator.generate_from_context(ctx)
             except Exception as exc:
                 logger.warning("信号生成失败 [%s]: %s", d, exc)
@@ -183,7 +225,8 @@ def backtest(
 
         stats = compute_backtest_stats(all_trades, all_skipped, total_signals)
 
-        _render_config(config, start, end)
+        _render_config(config, window.start_label, window.end_label)
+        _render_range_coverage(range_coverage)
         _render_summary(stats)
 
         if stats.by_exit:
@@ -230,6 +273,169 @@ def backtest(
 
 
 # ── Render functions ─────────────────────────────────────────────
+
+
+def _resolve_backtest_window(
+    conn: sqlite3.Connection,
+    start: str | None,
+    end: str | None,
+    years: int,
+) -> ResolvedBacktestWindow:
+    if years <= 0:
+        console.print("[bold red]--years 必须为正整数[/]")
+        raise typer.Exit(1)
+
+    if start and end:
+        start_date = from_tushare_date(start)
+        end_date = from_tushare_date(end)
+        if start_date > end_date:
+            console.print("[bold red]起始日期不能晚于结束日期[/]")
+            raise typer.Exit(1)
+        return ResolvedBacktestWindow(
+            start_date=start_date,
+            end_date=end_date,
+            start_label=start,
+            end_label=end,
+        )
+
+    if start and not end:
+        console.print("[bold red]仅提供 --start 不明确，请同时提供 --end[/]")
+        raise typer.Exit(1)
+
+    daily_bar_dates = _load_daily_bar_dates(conn)
+    if not daily_bar_dates:
+        console.print(
+            "[bold red]daily_bar 无数据，无法回测。请先运行 "
+            f"'hit-astocker sync --years {years}'。[/]"
+        )
+        raise typer.Exit(1)
+
+    executable_dates = _resolve_executable_signal_dates(
+        sorted(daily_bar_dates), daily_bar_dates,
+    )
+    if not executable_dates:
+        console.print(
+            "[bold red]现有 daily_bar 数据不足以形成 T+1/T+2 回测窗口。[/]"
+        )
+        raise typer.Exit(1)
+
+    available_start = min(daily_bar_dates)
+    available_end = max(daily_bar_dates)
+
+    if end:
+        end_date = from_tushare_date(end)
+    else:
+        end_date = executable_dates[-1]
+
+    if start is None:
+        target_start = shift_years(end_date, -years)
+        start_date = max(target_start, available_start)
+        truncated = start_date > target_start
+        start_label = start_date.strftime("%Y%m%d")
+        end_label = end_date.strftime("%Y%m%d")
+        return ResolvedBacktestWindow(
+            start_date=start_date,
+            end_date=end_date,
+            start_label=start_label,
+            end_label=end_label,
+            requested_years=years,
+            truncated=truncated,
+            available_start=available_start,
+            available_end=available_end,
+        )
+    raise AssertionError("unreachable")
+
+
+def _collect_range_coverage(
+    conn: sqlite3.Connection,
+    trading_dates: list[date],
+) -> BacktestRangeCoverage:
+    executable_dates = _resolve_executable_signal_dates(
+        trading_dates, _load_daily_bar_dates(conn),
+    )
+
+    buckets = []
+    for table_name, label, date_column in _OPTIONAL_COVERAGE_SOURCES:
+        covered_days = _count_covered_dates(conn, table_name, executable_dates, date_column)
+        buckets.append(CoverageBucket(
+            label=label,
+            covered_days=covered_days,
+            total_days=len(executable_dates),
+        ))
+
+    return BacktestRangeCoverage(
+        requested_days=len(trading_dates),
+        executable_days=len(executable_dates),
+        buckets=tuple(buckets),
+    )
+
+
+def _load_daily_bar_dates(conn: sqlite3.Connection) -> set[date]:
+    rows = conn.execute("SELECT DISTINCT trade_date FROM daily_bar").fetchall()
+    return {from_tushare_date(row["trade_date"]) for row in rows}
+
+
+def _resolve_executable_signal_dates(
+    trading_dates: list[date],
+    daily_bar_dates: set[date],
+) -> list[date]:
+    executable = []
+    for trade_date in trading_dates:
+        t1 = get_next_trading_day(trade_date)
+        t2 = get_next_trading_day(t1) if t1 else None
+        if t1 is None or t2 is None:
+            continue
+        if t1 not in daily_bar_dates or t2 not in daily_bar_dates:
+            continue
+        executable.append(trade_date)
+    return executable
+
+
+def _count_covered_dates(
+    conn: sqlite3.Connection,
+    table_name: str,
+    dates: list[date],
+    date_column: str,
+) -> int:
+    if not dates:
+        return 0
+
+    placeholders = ", ".join("?" for _ in dates)
+    sql = (
+        f"SELECT COUNT(DISTINCT [{date_column}]) FROM [{table_name}] "
+        f"WHERE [{date_column}] IN ({placeholders})"
+    )
+    rows = [to_tushare_date(d) for d in dates]
+    try:
+        result = conn.execute(sql, rows).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(result[0] or 0) if result else 0
+
+
+def _render_range_coverage(coverage: BacktestRangeCoverage) -> None:
+    table = Table(title="数据覆盖", header_style="bold cyan")
+    table.add_column("项目", width=12)
+    table.add_column("覆盖", justify="right", width=14)
+    table.add_column("说明", width=18)
+
+    table.add_row("请求交易日", str(coverage.requested_days), "回测区间内交易日")
+    table.add_row(
+        "可结算信号日",
+        f"{coverage.executable_days}/{coverage.requested_days}",
+        "需存在 T+1/T+2 日线",
+    )
+
+    for bucket in coverage.buckets:
+        if bucket.total_days == 0:
+            coverage_str = "0/0"
+            note = "无可结算信号日"
+        else:
+            coverage_str = f"{bucket.covered_days}/{bucket.total_days} ({bucket.ratio:.0%})"
+            note = "全覆盖" if bucket.covered_days == bucket.total_days else "缺失日自动剔除"
+        table.add_row(bucket.label, coverage_str, note)
+
+    console.print(table)
 
 
 def _render_config(config: BacktestConfig, start: str, end: str) -> None:

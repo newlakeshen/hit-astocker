@@ -83,6 +83,13 @@ class DailyAnalysisContext:
     sentiment_cycle: SentimentCycle | None = None
 
 
+@dataclass
+class DailyContextCaches:
+    """Reusable caches for multi-day context building."""
+
+    survival_models: dict[tuple[date, int], SurvivalModel] = field(default_factory=dict)
+
+
 def table_has_data(conn: sqlite3.Connection, table: str) -> bool:
     """Check if a table exists and has at least one row."""
     try:
@@ -129,6 +136,7 @@ def build_daily_context(
     *,
     llm_client=None,
     llm_cache=None,
+    caches: DailyContextCaches | None = None,
 ) -> DailyAnalysisContext:
     """Run all analyzers once and return an immutable context.
 
@@ -176,7 +184,15 @@ def build_daily_context(
     sector = SectorRotationAnalyzer(conn).analyze(trade_date)
     dragon = DragonTigerAnalyzer(conn).analyze(trade_date)
     event = EventClassifier(conn, llm_client=llm_client, llm_cache=llm_cache).analyze(trade_date)
-    survival_model = BoardSurvivalAnalyzer(conn).compute_model(trade_date)
+    lookback_years = getattr(settings, "survival_lookback_years", 6)
+    survival_key = (trade_date, lookback_years)
+    survival_model = caches.survival_models.get(survival_key) if caches else None
+    if survival_model is None:
+        survival_model = BoardSurvivalAnalyzer(conn).compute_model(
+            trade_date, lookback_years=lookback_years,
+        )
+        if caches is not None:
+            caches.survival_models[survival_key] = survival_model
     hsgt_net_map = HsgtTop10Repository(conn).find_net_buyers_by_date(trade_date)
 
     # Phase 2: dependent analyzers for ALL potential signal candidates
@@ -193,7 +209,7 @@ def build_daily_context(
     candidate_codes = list(fb_codes | lianban_codes | leader_codes)
     moneyflow = MoneyFlowAnalyzer(conn).analyze(trade_date, candidate_codes)
     stock_sentiments = StockSentimentAnalyzer(conn).analyze(
-        trade_date, candidate_codes, coverage=coverage,
+        trade_date, candidate_codes, coverage=coverage, event_result=event,
     )
 
     return DailyAnalysisContext(

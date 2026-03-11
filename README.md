@@ -37,10 +37,13 @@ hit-astocker dragon -d 20260306
 hit-astocker signal -d 20260306
 
 # Backtest
+hit-astocker backtest
+hit-astocker backtest --years 6
 hit-astocker backtest -s 20260301 -e 20260306
 
 # Batch sync
 hit-astocker sync --start 20260301 --end 20260306
+hit-astocker sync --years 6
 ```
 
 ## Architecture

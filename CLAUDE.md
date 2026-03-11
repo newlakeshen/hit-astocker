@@ -10,7 +10,7 @@ A股打板量化分析系统 (A-Share Limit-Up Board Hitting Quantitative Analys
 - `stk_factor_pro` is fetched on-demand per stock (not in bulk sync)
 - Tushare token is stored in `.env` file
 - Rate limit: 200 calls/minute (configurable)
-- Supports 10-year historical data range for statistical models
+- Supports 6-year historical data range for statistical models
 
 ## Architecture
 
@@ -61,7 +61,7 @@ Concurrency model:
   - `signal_validator.py` - T+1 signal validation (legacy, simple close-vs-OHLC)
   - `backtest_engine.py` - Realistic board-hitting backtest (3 execution modes + dynamic stop/target)
   - `predictor.py` - Buy/sell prediction engine
-  - `board_survival.py` - 连板生存率统计 (10-year historical P(N+1|N))
+  - `board_survival.py` - 连板生存率统计 (6-year historical P(N+1|N))
   - `technical_form.py` - 技术形态评分 (MACD/KDJ/RSI/BOLL)
 - `signals/` - Two-stage signal generation pipeline:
   - `stage1_filter.py` - Hard filter (ST排除/大盘暴跌/周期门控/质量硬伤)
@@ -178,7 +178,7 @@ Context features (6): cycle_phase (ordinal 0-5),
 - Disabled via --no-dynamic-stops
 
 ### Board Survival Model:
-- Uses up to 10 years of historical limit_step data
+- Uses up to 6 years of historical limit_step data
 - Computes P(height N+1 | height N) for each board height
 - Replaces crude fixed lianban_position scoring with statistical probabilities
 

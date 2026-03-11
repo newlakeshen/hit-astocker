@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     sl_technical_form_weight: float = 0.03
 
     # Board survival analysis
-    survival_lookback_years: int = 10
+    survival_lookback_years: int = 6
 
     # API settings
     api_batch_size: int = 50

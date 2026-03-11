@@ -18,6 +18,15 @@ def from_tushare_date(s: str) -> date:
     return datetime.strptime(s, TUSHARE_DATE_FMT).date()
 
 
+def shift_years(d: date, years: int) -> date:
+    """Shift a date by whole years, clamping Feb 29 to Feb 28 when needed."""
+    target_year = d.year + years
+    try:
+        return d.replace(year=target_year)
+    except ValueError:
+        return d.replace(year=target_year, day=28)
+
+
 def date_range(start: date, end: date) -> list[date]:
     """Generate list of calendar dates from start to end (inclusive)."""
     days = (end - start).days
@@ -47,7 +56,11 @@ def get_next_trading_day(d: date) -> date | None:
     return get_trade_calendar().get_next(d)
 
 
-def get_recent_trading_days(d: date, count: int, trading_days: set[date] | None = None) -> list[date]:
+def get_recent_trading_days(
+    d: date,
+    count: int,
+    trading_days: set[date] | None = None,
+) -> list[date]:
     """Get the most recent N trading days before *d* (newest first)."""
     if trading_days:
         from bisect import bisect_left

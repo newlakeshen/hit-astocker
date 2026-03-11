@@ -33,6 +33,7 @@ from hit_astocker.repositories.ths_hot_repo import ThsHotRepository
 
 if TYPE_CHECKING:
     from hit_astocker.models.daily_context import DataCoverage
+    from hit_astocker.models.event_data import EventAnalysisResult
 
 
 # ── Base weights (sum=1.0 when all 8 active) ──────────────────────────
@@ -71,6 +72,7 @@ class StockSentimentAnalyzer:
         trade_date: date,
         ts_codes: list[str] | None = None,
         coverage: DataCoverage | None = None,
+        event_result: EventAnalysisResult | None = None,
     ) -> list[StockSentimentScore]:
         """Compute per-stock sentiment scores with dynamic factor weighting."""
         # Load KPL data for all limit-up stocks
@@ -78,7 +80,8 @@ class StockSentimentAnalyzer:
         kpl_map = {rec.ts_code: rec for rec in kpl_records}
 
         # Event analysis for theme heat
-        event_result = self._event_classifier.analyze(trade_date)
+        if event_result is None:
+            event_result = self._event_classifier.analyze(trade_date)
         theme_heat_map = {th.theme_name: th.heat_score for th in event_result.theme_heats}
         event_map = {ev.ts_code: ev for ev in event_result.stock_events}
 
@@ -137,7 +140,9 @@ class StockSentimentAnalyzer:
             popularity_score = self._score_popularity(ts_code, ths_hot_map) if has_ths_hot else 0.0
             northbound_score = self._score_northbound(ts_code, hsgt_net_map) if has_hsgt else 0.0
             tech_form = tech_map.get(ts_code)
-            technical_score = (tech_form.composite_score if tech_form else 50.0) if has_tech else 0.0
+            technical_score = (
+                tech_form.composite_score if tech_form else 50.0
+            ) if has_tech else 0.0
 
             if has_ths_hot:
                 scores["popularity"] = popularity_score

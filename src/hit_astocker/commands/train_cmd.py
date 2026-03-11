@@ -127,7 +127,7 @@ def _collect_training_data(
     """
     from hit_astocker.analyzers.backtest_engine import BacktestEngine
     from hit_astocker.models.backtest import BacktestConfig
-    from hit_astocker.models.daily_context import build_daily_context
+    from hit_astocker.models.daily_context import DailyContextCaches, build_daily_context
     from hit_astocker.models.signal import RiskLevel, SignalType, TradingSignal
     from hit_astocker.signals.composite_scorer import CompositeScorer
     from hit_astocker.signals.feature_builder import build_feature_vector
@@ -140,6 +140,7 @@ def _collect_training_data(
     stage1_filter = Stage1Filter()
     risk_assessor = RiskAssessor()
     config = BacktestConfig()
+    context_caches = DailyContextCaches()
 
     trading_days = get_trading_days_between(start_date, end_date)
     features: list[list[float]] = []
@@ -164,7 +165,7 @@ def _collect_training_data(
                     meta["days_skipped"] += 1
                     continue
 
-                ctx = build_daily_context(conn, settings, td)
+                ctx = build_daily_context(conn, settings, td, caches=context_caches)
 
                 # Get scored candidates (factors extracted)
                 scored = scorer.score(

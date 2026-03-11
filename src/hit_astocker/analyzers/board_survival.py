@@ -1,7 +1,7 @@
 """连板生存率分析器.
 
 Uses historical limit_step data to compute survival rates at each board height.
-P(height N+1 | height N) based on all available history (up to 10 years).
+P(height N+1 | height N) based on all available history (up to 6 years).
 """
 
 import sqlite3
@@ -37,7 +37,7 @@ class BoardSurvivalAnalyzer:
     def __init__(self, conn: sqlite3.Connection):
         self._conn = conn
 
-    def compute_model(self, end_date: date, lookback_years: int = 10) -> SurvivalModel:
+    def compute_model(self, end_date: date, lookback_years: int = 6) -> SurvivalModel:
         """Compute survival rates from historical data.
 
         Uses all limit_step data up to end_date, going back lookback_years.
@@ -112,7 +112,7 @@ class BoardSurvivalAnalyzer:
             total_samples=total_all,
         )
 
-    def get_survival_rate(self, end_date: date, height: int, lookback_years: int = 10) -> float:
+    def get_survival_rate(self, end_date: date, height: int, lookback_years: int = 6) -> float:
         """Get survival rate for a specific board height. Cached-friendly single query."""
         end_str = end_date.strftime(TUSHARE_DATE_FMT)
         start_date = date(end_date.year - lookback_years, end_date.month, end_date.day)
