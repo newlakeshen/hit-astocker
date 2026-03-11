@@ -79,7 +79,7 @@ def firstboard_table(results) -> Table:
     table.add_column("#", justify="right", width=3)
     table.add_column("代码", width=10)
     table.add_column("名称", width=8)
-    table.add_column("行业", width=8)
+    table.add_column("题材", width=8)
     table.add_column("封板时间", width=9)
     table.add_column("开板次数", justify="right", width=5)
     table.add_column("封单/流通", justify="right", width=8)
@@ -92,7 +92,7 @@ def firstboard_table(results) -> Table:
             str(i),
             r.ts_code,
             r.name,
-            r.industry[:4],
+            (r.sector_name or r.industry)[:4],
             r.first_time[:5] if r.first_time else "-",
             str(r.open_times),
             f"{seal_ratio:.1f}%",

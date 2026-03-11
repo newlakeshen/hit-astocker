@@ -1,13 +1,14 @@
-"""Model training command — train ML ranking model from historical data.
+"""Model training command — train ML ranking model from executable trade outcomes.
 
 Pipeline:
   1. For each trading day in [start, end]:
      a. Build DailyAnalysisContext (compute all factors)
-     b. Extract factor vectors for all candidates
-     c. Look up T+1 close vs T close → binary label (profitable or not)
+     b. Apply the same Stage1/risk gating used by live signal generation
+     c. Simulate the default T+1/T+2 trade lifecycle
+     d. Use realized net PnL > 0 as the training label
   2. Aggregate (features, labels) across all days
   3. Train model (logistic or GBDT)
-  4. Save model + print evaluation metrics + feature importance
+  4. Save model + quality metadata
 """
 
 import logging
@@ -100,7 +101,7 @@ def train(
 
         # ── 3. Save model ──
         model_path = Path(settings.db_path).parent / "ranking_model.pkl"
-        model.save(model_path)
+        model.save(model_path, metrics)
 
         # ── 4. Display results ──
         _display_metrics(metrics)
@@ -108,7 +109,10 @@ def train(
         _display_training_summary(meta)
 
         console.print(f"\n  [green]模型已保存: {model_path}[/]")
-        console.print("  下次运行 signal 命令将自动使用 ML 模型排序。\n")
+        if metrics["auc_mean"] >= 0.55:
+            console.print("  下次运行 signal 命令将自动使用 ML 模型排序。\n")
+        else:
+            console.print("  当前模型未达到自动启用阈值，signal 命令将继续使用规则排序。\n")
 
 
 def _collect_training_data(
@@ -118,21 +122,35 @@ def _collect_training_data(
 
     For each trading day:
       1. Compute factors for all candidates
-      2. Look up T+1 close vs T close as label
+      2. Apply the same Stage1/risk gating used in live signal generation
+      3. Simulate the default executable trade and use realized PnL as label
     """
+    from hit_astocker.analyzers.backtest_engine import BacktestEngine
+    from hit_astocker.models.backtest import BacktestConfig
     from hit_astocker.models.daily_context import build_daily_context
-    from hit_astocker.repositories.daily_bar_repo import DailyBarRepository
+    from hit_astocker.models.signal import RiskLevel, SignalType, TradingSignal
     from hit_astocker.signals.composite_scorer import CompositeScorer
     from hit_astocker.signals.feature_builder import build_feature_vector
+    from hit_astocker.signals.risk_assessor import RiskAssessor
+    from hit_astocker.signals.stage1_filter import Stage1Filter
     from hit_astocker.utils.date_utils import get_next_trading_day
 
-    bar_repo = DailyBarRepository(conn)
+    engine = BacktestEngine(conn)
     scorer = CompositeScorer(settings)
+    stage1_filter = Stage1Filter()
+    risk_assessor = RiskAssessor()
+    config = BacktestConfig()
 
     trading_days = get_trading_days_between(start_date, end_date)
     features: list[list[float]] = []
     labels: list[int] = []
-    meta = {"days_processed": 0, "days_skipped": 0, "total_days": len(trading_days)}
+    meta = {
+        "days_processed": 0,
+        "days_skipped": 0,
+        "signals_executed": 0,
+        "signals_skipped": 0,
+        "total_days": len(trading_days),
+    }
 
     with console.status("  收集训练数据...") as status:
         for i, td in enumerate(trading_days):
@@ -141,7 +159,8 @@ def _collect_training_data(
             )
             try:
                 next_td = get_next_trading_day(td)
-                if not next_td:
+                exit_td = get_next_trading_day(next_td) if next_td else None
+                if not next_td or not exit_td:
                     meta["days_skipped"] += 1
                     continue
 
@@ -167,31 +186,61 @@ def _collect_training_data(
                     meta["days_skipped"] += 1
                     continue
 
-                # Batch-load T and T+1 bars for labeling
-                t_bars = {
-                    b.ts_code: b
-                    for b in bar_repo.find_records_by_date(td)
-                }
-                t1_bars = {
-                    b.ts_code: b
-                    for b in bar_repo.find_records_by_date(next_td)
-                }
+                survivors = stage1_filter.filter(scored, ctx)
+                if not survivors:
+                    meta["days_skipped"] += 1
+                    continue
 
-                for c in scored:
-                    t_bar = t_bars.get(c.ts_code)
-                    t1_bar = t1_bars.get(c.ts_code)
-                    if not t_bar or not t1_bar or t_bar.close <= 0:
-                        continue
-
-                    # Label: T+1 close > T close → profitable (1), else (0)
-                    label = 1 if t1_bar.close > t_bar.close else 0
-
-                    vec = build_feature_vector(
-                        c.factors, c.signal_type,
-                        ctx.sentiment_cycle, ctx.coverage,
+                signal_features: list[tuple[TradingSignal, list[float]]] = []
+                for candidate in survivors:
+                    risk = risk_assessor.assess(
+                        candidate, ctx.sentiment, cycle=ctx.sentiment_cycle,
                     )
+                    if risk == RiskLevel.NO_GO:
+                        continue
+                    signal = TradingSignal(
+                        trade_date=ctx.trade_date,
+                        ts_code=candidate.ts_code,
+                        name=candidate.name,
+                        signal_type=SignalType(candidate.signal_type),
+                        composite_score=candidate.score,
+                        risk_level=risk,
+                        position_hint=RiskAssessor.position_hint(risk),
+                        factors=candidate.factors,
+                        reason="",
+                        score_source="rules",
+                    )
+                    signal_features.append((
+                        signal,
+                        build_feature_vector(
+                            candidate.factors,
+                            candidate.signal_type,
+                            ctx.sentiment_cycle,
+                            ctx.coverage,
+                        ),
+                    ))
+
+                if not signal_features:
+                    meta["days_skipped"] += 1
+                    continue
+
+                day_result = engine.simulate_day(
+                    [signal for signal, _ in signal_features],
+                    config,
+                    td,
+                    next_td,
+                    exit_td,
+                )
+                trade_map = {trade.ts_code: trade for trade in day_result.trades}
+                for signal, vec in signal_features:
+                    trade = trade_map.get(signal.ts_code)
+                    if trade is None:
+                        continue
                     features.append(vec)
-                    labels.append(label)
+                    labels.append(1 if trade.pnl_pct > 0 else 0)
+
+                meta["signals_executed"] += len(day_result.trades)
+                meta["signals_skipped"] += len(day_result.skipped)
 
                 meta["days_processed"] += 1
 
@@ -257,7 +306,9 @@ def _display_training_summary(meta: dict) -> None:
     console.print(
         Panel(
             f"处理交易日: {meta['days_processed']}/{meta['total_days']}\n"
-            f"跳过交易日: {meta['days_skipped']}",
+            f"跳过交易日: {meta['days_skipped']}\n"
+            f"可执行样本: {meta['signals_executed']}\n"
+            f"被跳过信号: {meta['signals_skipped']}",
             title="数据收集",
         )
     )

@@ -128,17 +128,29 @@ class SentimentAnalyzer:
         f_auction = pct_part + up_part
 
         # ── Weighted composite ──
-        money_effect = (
-            s.sentiment_up_down_ratio_weight * f_ratio
-            + s.sentiment_broken_recovery_weight * f_broken_recovery
-            + s.sentiment_promotion_rate_weight * f_promo
-            + s.sentiment_height_promotion_weight * f_height_promo
-            + s.sentiment_max_height_weight * f_height
-            + s.sentiment_prev_premium_weight * f_premium
-            + s.sentiment_yizi_ratio_weight * f_yizi
-            + s.sentiment_board_structure_weight * f_board_struct
-            + s.sentiment_auction_strength_weight * f_auction
-        )
+        factor_scores = {
+            "ratio": f_ratio,
+            "broken_recovery": f_broken_recovery,
+            "promotion": f_promo,
+            "height_promotion": f_height_promo,
+            "height": f_height,
+            "premium": f_premium,
+            "yizi": f_yizi,
+            "board_structure": f_board_struct,
+            "auction": f_auction if auction_stats else None,
+        }
+        factor_weights = {
+            "ratio": s.sentiment_up_down_ratio_weight,
+            "broken_recovery": s.sentiment_broken_recovery_weight,
+            "promotion": s.sentiment_promotion_rate_weight,
+            "height_promotion": s.sentiment_height_promotion_weight,
+            "height": s.sentiment_max_height_weight,
+            "premium": s.sentiment_prev_premium_weight,
+            "yizi": s.sentiment_yizi_ratio_weight,
+            "board_structure": s.sentiment_board_structure_weight,
+            "auction": s.sentiment_auction_strength_weight,
+        }
+        money_effect = self._weighted_factor_score(factor_scores, factor_weights)
 
         # Market context adjustment
         market_ctx = self._market_ctx_analyzer.analyze(trade_date)
@@ -243,6 +255,19 @@ class SentimentAnalyzer:
             premiums.append(premium)
 
         return sum(premiums) / len(premiums) if premiums else 0.0
+
+    @staticmethod
+    def _weighted_factor_score(
+        scores: dict[str, float | None],
+        weights: dict[str, float],
+    ) -> float:
+        available = [(key, score) for key, score in scores.items() if score is not None]
+        if not available:
+            return 0.0
+        total_weight = sum(weights[key] for key, _ in available)
+        if total_weight <= 0:
+            return 0.0
+        return sum(weights[key] / total_weight * score for key, score in available)
 
     def _determine_risk(self, score: float, broken_rate: float) -> str:
         s = self._settings

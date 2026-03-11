@@ -23,7 +23,6 @@ from hit_astocker.analyzers.backtest_engine import BacktestEngine, compute_backt
 from hit_astocker.config.settings import get_settings
 from hit_astocker.database.connection import get_connection
 from hit_astocker.database.migrations import ensure_schema
-from hit_astocker.models.daily_context import DataCoverage, build_daily_context, table_has_data
 from hit_astocker.models.backtest import (
     BacktestConfig,
     BacktestStats,
@@ -31,6 +30,7 @@ from hit_astocker.models.backtest import (
     SkippedSignal,
     TradeResult,
 )
+from hit_astocker.models.daily_context import DataCoverage, build_daily_context, table_has_data
 from hit_astocker.renderers.theme import APP_THEME, pct_color, risk_color, score_color
 from hit_astocker.signals.signal_generator import SignalGenerator
 from hit_astocker.utils.date_utils import (
@@ -128,6 +128,7 @@ def backtest(
             has_hsgt=table_has_data(conn, "hsgt_top10"),
             has_stk_factor=table_has_data(conn, "stk_factor_pro"),
             has_hm=table_has_data(conn, "hm_detail"),
+            has_auction=table_has_data(conn, "stk_auction"),
         )
         if coverage.missing_sources:
             missing = ", ".join(coverage.missing_sources)
