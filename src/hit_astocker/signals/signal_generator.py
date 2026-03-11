@@ -355,6 +355,8 @@ class SignalGenerator:
             parts.append("热点板块")
         if f.get("dragon_tiger", 0) >= 70:
             parts.append("游资关注")
+        if f.get("auction_quality", 0) >= 70:
+            parts.append("竞价承接强")
         if f.get("capital_flow", 0) >= 70:
             parts.append("主力净流入")
         if f.get("northbound", 0) >= 70:

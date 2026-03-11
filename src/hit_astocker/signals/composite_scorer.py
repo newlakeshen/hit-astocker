@@ -282,6 +282,12 @@ def _common_factors(ts_code: str, m: _SharedMaps) -> dict[str, float | None]:
     else:
         factors["technical_form"] = ss.technical_form_score if ss else 50.0
 
+    # Auction quality — None when stk_auction is empty
+    if cov and not cov.has_auction:
+        factors["auction_quality"] = None
+    else:
+        factors["auction_quality"] = ss.bid_activity_score if ss else 50.0
+
     return factors
 
 
@@ -416,6 +422,7 @@ def _fb_weights(s: Settings) -> dict[str, float]:
         "stock_sentiment": s.fb_stock_sentiment_weight,
         "northbound": s.fb_northbound_weight,
         "technical_form": s.fb_technical_form_weight,
+        "auction_quality": s.fb_auction_quality_weight,
     }
 
 
@@ -432,6 +439,7 @@ def _fl_weights(s: Settings) -> dict[str, float]:
         "stock_sentiment": s.fl_stock_sentiment_weight,
         "northbound": s.fl_northbound_weight,
         "technical_form": s.fl_technical_form_weight,
+        "auction_quality": s.fl_auction_quality_weight,
     }
 
 
@@ -448,6 +456,7 @@ def _sl_weights(s: Settings) -> dict[str, float]:
         "stock_sentiment": s.sl_stock_sentiment_weight,
         "northbound": s.sl_northbound_weight,
         "technical_form": s.sl_technical_form_weight,
+        "auction_quality": s.sl_auction_quality_weight,
     }
 
 
@@ -476,8 +485,8 @@ def _cycle_adjust_weights(
         for k in ("technical_form", "capital_flow", "northbound"):
             if k in adjusted:
                 adjusted[k] *= 0.3
-        # 提升确定性因子
-        for k in ("seal_quality", "survival", "leader_position", "theme_heat"):
+        # 提升确定性因子 (竞价承接在冰点更关键)
+        for k in ("seal_quality", "survival", "leader_position", "theme_heat", "auction_quality"):
             if k in adjusted:
                 adjusted[k] *= 1.4
     elif phase == CyclePhase.DIVERGE:

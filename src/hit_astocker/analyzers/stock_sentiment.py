@@ -1,17 +1,19 @@
 """Per-stock sentiment scoring engine (dynamic-weight).
 
-Combines up to 8 dimensions to assess individual stock "热度" (heat/popularity).
+Combines up to 9 dimensions to assess individual stock "热度" (heat/popularity).
 Factors whose backing tables are empty are **excluded** from weighting and their
 weight is redistributed proportionally to factors with real data.
 
 Core 5 (always available — backed by kpl_list + daily_bar):
 - Volume ratio (量比): today's volume vs recent average
 - Seal order strength (封单强度): from KPL lu_limit_order
-- Bid activity (竞价活跃度): from KPL bid_amount
 - Theme heat (题材热度): from event classifier
 - Event catalyst (事件催化): from lu_desc classification
+- Bid activity (竞价活跃度): from KPL bid_amount (fallback)
 
-Optional 3 (require synced tables):
+Optional 4 (require synced tables):
+- Auction quality (竞价质量): from stk_auction (4-dimension composite)
+  Replaces simple bid_activity when data available
 - Popularity ranking (同花顺人气): from ths_hot
 - Northbound signal (北向资金): from hsgt_top10
 - Technical form (技术形态): from stk_factor_pro
@@ -25,7 +27,9 @@ from typing import TYPE_CHECKING
 
 from hit_astocker.analyzers.event_classifier import EventClassifier
 from hit_astocker.analyzers.technical_form import TechnicalFormAnalyzer
+from hit_astocker.models.auction_data import AuctionRecord
 from hit_astocker.models.event_data import StockSentimentScore
+from hit_astocker.repositories.auction_repo import AuctionRepository
 from hit_astocker.repositories.daily_bar_repo import DailyBarRepository
 from hit_astocker.repositories.hsgt_repo import HsgtTop10Repository
 from hit_astocker.repositories.kpl_repo import KplRepository, split_themes
@@ -37,12 +41,13 @@ if TYPE_CHECKING:
 
 
 # ── Base weights (sum=1.0 when all 8 active) ──────────────────────────
+# bid_activity upgraded to 0.12 (from 0.08) — auction quality is critical for 打板
 _BASE_WEIGHTS: dict[str, float] = {
-    "volume_ratio": 0.15,
-    "seal_order": 0.14,
-    "bid_activity": 0.08,
-    "theme_heat": 0.12,
-    "event_catalyst": 0.11,
+    "volume_ratio": 0.14,
+    "seal_order": 0.13,
+    "bid_activity": 0.12,
+    "theme_heat": 0.11,
+    "event_catalyst": 0.10,
     "popularity": 0.15,
     "northbound": 0.13,
     "technical_form": 0.12,
@@ -66,6 +71,7 @@ class StockSentimentAnalyzer:
         self._ths_hot_repo = ThsHotRepository(conn)
         self._hsgt_repo = HsgtTop10Repository(conn)
         self._technical_analyzer = TechnicalFormAnalyzer(conn)
+        self._auction_repo = AuctionRepository(conn)
 
     def analyze(
         self,
@@ -104,8 +110,20 @@ class StockSentimentAnalyzer:
         # Batch load: Recent daily bars for volume ratio (replaces N+1)
         bars_map = self._bar_repo.find_recent_bars_batch(codes, trade_date, count=6)
 
+        # Batch load: Auction data (stk_auction)
+        has_auction = coverage.has_auction if coverage else False
+        auction_map: dict[str, AuctionRecord] = {}
+        auction_history: dict[str, list[AuctionRecord]] = {}
+        theme_auction_pcts: dict[str, list[float]] = {}
+        if has_auction:
+            auction_map = self._auction_repo.find_by_codes_on_date(codes, trade_date)
+            auction_history = self._auction_repo.find_recent_auction_batch(
+                codes, trade_date, count=6,
+            )
+            # Build theme → pct_change list for theme-rank scoring
+            theme_auction_pcts = _build_theme_auction_ranks(kpl_map, auction_map)
+
         # ── Determine active factors ──
-        # Use explicit coverage when available; otherwise detect from batch data
         has_ths_hot = coverage.has_ths_hot if coverage else len(ths_hot_map) > 0
         has_hsgt = coverage.has_hsgt if coverage else len(hsgt_net_map) > 0
         has_tech = coverage.has_stk_factor if coverage else len(tech_map) > 0
@@ -131,7 +149,13 @@ class StockSentimentAnalyzer:
                     bars_map.get(ts_code, []), trade_date,
                 ),
                 "seal_order": self._score_seal_order(kpl),
-                "bid_activity": self._score_bid_activity(kpl),
+                "bid_activity": _score_auction(
+                    auction_map.get(ts_code),
+                    auction_history.get(ts_code, []),
+                    kpl,
+                    theme_auction_pcts,
+                    has_auction,
+                ),
                 "theme_heat": self._score_theme_heat(kpl, theme_heat_map),
                 "event_catalyst": self._score_event_catalyst(event),
             }
@@ -222,23 +246,6 @@ class StockSentimentAnalyzer:
         return 35.0
 
     @staticmethod
-    def _score_bid_activity(kpl) -> float:
-        """Score based on bid_amount (竞价成交额)."""
-        if not kpl or kpl.bid_amount <= 0:
-            return 30.0
-
-        bid = kpl.bid_amount
-        if bid >= 10000:
-            return 100.0
-        if bid >= 5000:
-            return 80.0
-        if bid >= 2000:
-            return 60.0
-        if bid >= 1000:
-            return 45.0
-        return 30.0
-
-    @staticmethod
     def _score_theme_heat(kpl, theme_heat_map: dict[str, float]) -> float:
         """Score based on the stock's theme heat."""
         if not kpl or not kpl.theme:
@@ -300,3 +307,181 @@ class StockSentimentAnalyzer:
         if net > -5000:
             return 35.0
         return 20.0  # Heavy selling
+
+
+# ── Auction quality scoring (4-dimension composite) ──────────────────
+
+def _score_auction(
+    auction: AuctionRecord | None,
+    history: list[AuctionRecord],
+    kpl,
+    theme_auction_pcts: dict[str, list[float]],
+    has_auction: bool,
+) -> float:
+    """Score auction quality from 4 dimensions when stk_auction data available.
+
+    When stk_auction not synced, falls back to KPL bid_amount.
+
+    Sub-dimensions:
+      1. 竞价高开幅度 (30%): 涨停股当日竞价 gap → 隔夜需求强度
+      2. 竞价成交额   (25%): 绝对金额 → 机构参与度
+      3. 竞价量比     (25%): 相对历史竞价量 → 异常关注信号
+      4. 题材内分位   (20%): 同题材涨停股中竞价排名 → 辨识度
+    """
+    if not has_auction or auction is None:
+        # Fallback: KPL bid_amount (backward compat)
+        return _score_bid_activity_kpl(kpl)
+
+    gap = _score_auction_gap(auction.pct_change)
+    amount = _score_auction_amount(auction.amount)
+    vol_ratio = _score_auction_vol_ratio(auction, history)
+    theme_rank = _score_auction_theme_rank(auction, kpl, theme_auction_pcts)
+
+    return round(gap * 0.30 + amount * 0.25 + vol_ratio * 0.25 + theme_rank * 0.20, 2)
+
+
+def _score_bid_activity_kpl(kpl) -> float:
+    """Original KPL-based bid activity (fallback when no stk_auction)."""
+    if not kpl or kpl.bid_amount <= 0:
+        return 30.0
+    bid = kpl.bid_amount
+    if bid >= 10000:
+        return 100.0
+    if bid >= 5000:
+        return 80.0
+    if bid >= 2000:
+        return 60.0
+    if bid >= 1000:
+        return 45.0
+    return 30.0
+
+
+def _score_auction_gap(pct_change: float) -> float:
+    """竞价高开幅度: 涨停股当日开盘 gap 反映隔夜资金承接强度.
+
+    对打板股:
+      低开(<-1%) → 弱: 隔夜资金不认可, 承接差
+      平开(-1%~+1%) → 中性: 基础承接
+      小高开(+1%~+3%) → 强: 需求旺盛, 理想状态
+      高开(+3%~+5%) → 很强: 强势竞价, 但追高风险升
+      大幅高开(>+5%) → 过热: 溢价过高, 日内回落概率增
+    """
+    if pct_change < -3.0:
+        return 10.0
+    if pct_change < -1.0:
+        return 30.0
+    if pct_change < 1.0:
+        return 50.0
+    if pct_change < 3.0:
+        return 80.0
+    if pct_change < 5.0:
+        return 70.0
+    return 55.0  # 大幅高开过热, 打板反而不利
+
+
+def _score_auction_amount(amount: float) -> float:
+    """竞价成交额 (万元): 绝对金额反映机构参与和流动性."""
+    if amount >= 20000:
+        return 100.0
+    if amount >= 10000:
+        return 90.0
+    if amount >= 5000:
+        return 75.0
+    if amount >= 2000:
+        return 60.0
+    if amount >= 1000:
+        return 45.0
+    return 30.0
+
+
+def _score_auction_vol_ratio(
+    today: AuctionRecord,
+    history: list[AuctionRecord],
+) -> float:
+    """竞价量比: 今日竞价量 / 近 N 日均竞价量.
+
+    异常放量竞价 = 资金集中抢筹信号.
+    """
+    if not history or today.vol <= 0:
+        return 50.0  # 无历史 → 中性
+
+    # Exclude today from history (history includes today as last element)
+    prev = [r for r in history if r.trade_date < today.trade_date]
+    if not prev:
+        return 50.0
+
+    avg_vol = sum(r.vol for r in prev) / len(prev)
+    if avg_vol <= 0:
+        return 50.0
+
+    ratio = today.vol / avg_vol
+    if ratio >= 4.0:
+        return 100.0
+    if ratio >= 3.0:
+        return 90.0
+    if ratio >= 2.0:
+        return 75.0
+    if ratio >= 1.5:
+        return 60.0
+    if ratio >= 1.0:
+        return 45.0
+    return 25.0
+
+
+def _score_auction_theme_rank(
+    auction: AuctionRecord,
+    kpl,
+    theme_auction_pcts: dict[str, list[float]],
+) -> float:
+    """题材内竞价分位: 同题材涨停股中, 本股竞价高开的百分位排名.
+
+    龙头股在竞价阶段就会展现辨识度 (高开幅度领先同题材).
+    Top 20% → 100, Top 40% → 75, Top 60% → 55, Bottom 40% → 35
+    """
+    if not kpl or not kpl.theme:
+        return 50.0  # 无题材信息 → 中性
+
+    themes = split_themes(kpl.theme)
+    if not themes:
+        return 50.0
+
+    # Use the best rank across all themes
+    best_percentile = 0.5  # default: median
+    for theme in themes:
+        pcts = theme_auction_pcts.get(theme)
+        if not pcts or len(pcts) < 2:
+            continue
+        # Count how many stocks have lower pct_change
+        below = sum(1 for p in pcts if p < auction.pct_change)
+        percentile = below / len(pcts)  # 0=worst, 1=best
+        best_percentile = max(best_percentile, percentile)
+
+    if best_percentile >= 0.80:
+        return 100.0
+    if best_percentile >= 0.60:
+        return 75.0
+    if best_percentile >= 0.40:
+        return 55.0
+    return 35.0
+
+
+def _build_theme_auction_ranks(
+    kpl_map: dict, auction_map: dict[str, AuctionRecord],
+) -> dict[str, list[float]]:
+    """Build theme → [pct_change values] mapping for theme-rank scoring.
+
+    Groups all limit-up stocks by their themes, collecting each stock's
+    auction pct_change for intra-theme percentile ranking.
+    """
+    result: dict[str, list[float]] = {}
+    for ts_code, kpl in kpl_map.items():
+        if not kpl.theme:
+            continue
+        auction = auction_map.get(ts_code)
+        if auction is None:
+            continue
+        for theme in split_themes(kpl.theme):
+            if theme not in result:
+                result[theme] = []
+            result[theme].append(auction.pct_change)
+    return result

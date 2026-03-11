@@ -1,6 +1,7 @@
 """Repository for 集合竞价 data."""
 
 import sqlite3
+from collections import defaultdict
 from datetime import date, datetime
 
 from hit_astocker.config.constants import TUSHARE_DATE_FMT
@@ -16,6 +17,53 @@ class AuctionRepository(BaseRepository):
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         rows = self.find_by_date(date_str)
         return [self._to_model(r) for r in rows]
+
+    def find_by_codes_on_date(
+        self, codes: list[str], trade_date: date,
+    ) -> dict[str, AuctionRecord]:
+        """Batch load auction records for specific stocks on a given date."""
+        if not codes:
+            return {}
+        date_str = trade_date.strftime(TUSHARE_DATE_FMT)
+        placeholders = ",".join("?" * len(codes))
+        sql = f"""
+            SELECT * FROM stk_auction
+            WHERE trade_date = ? AND ts_code IN ({placeholders})
+        """
+        rows = self._conn.execute(sql, [date_str, *codes]).fetchall()
+        return {r["ts_code"]: self._to_model(r) for r in rows}
+
+    def find_recent_auction_batch(
+        self, codes: list[str], trade_date: date, count: int = 5,
+    ) -> dict[str, list[AuctionRecord]]:
+        """Batch load recent N days of auction data per stock.
+
+        Returns {ts_code: [records oldest→newest]}.
+        Uses ROW_NUMBER window to avoid N+1.
+        """
+        if not codes:
+            return {}
+        date_str = trade_date.strftime(TUSHARE_DATE_FMT)
+        placeholders = ",".join("?" * len(codes))
+        sql = f"""
+            SELECT trade_date, ts_code, name, "open", pre_close,
+                   "change", pct_change, vol, amount
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY ts_code ORDER BY trade_date DESC
+                ) AS rn
+                FROM stk_auction
+                WHERE ts_code IN ({placeholders}) AND trade_date <= ?
+            ) WHERE rn <= ?
+            ORDER BY ts_code, trade_date
+        """
+        params = [*codes, date_str, count]
+        rows = self._conn.execute(sql, params).fetchall()
+        result: dict[str, list[AuctionRecord]] = defaultdict(list)
+        for r in rows:
+            rec = self._to_model(r)
+            result[rec.ts_code].append(rec)
+        return dict(result)
 
     def compute_auction_stats(self, trade_date: date) -> dict[str, float]:
         """Compute aggregate auction stats for market sentiment.

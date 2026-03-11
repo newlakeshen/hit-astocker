@@ -416,6 +416,7 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_stk_factor_date ON stk_factor_pro(trade_date)",
     "CREATE INDEX IF NOT EXISTS idx_stk_factor_code_date ON stk_factor_pro(ts_code, trade_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_stk_auction_date ON stk_auction(trade_date)",
+    "CREATE INDEX IF NOT EXISTS idx_stk_auction_code_date ON stk_auction(ts_code, trade_date DESC)",
     "CREATE INDEX IF NOT EXISTS idx_trade_cal_open ON trade_cal(is_open, cal_date)",
     "CREATE INDEX IF NOT EXISTS idx_anns_d_date ON anns_d(ann_date)",
     "CREATE INDEX IF NOT EXISTS idx_anns_d_code ON anns_d(ts_code)",

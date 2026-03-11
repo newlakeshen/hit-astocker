@@ -46,44 +46,47 @@ class Settings(BaseSettings):
     first_board_turnover_weight: float = 0.15
     first_board_sector_weight: float = 0.20
 
-    # ── FIRST_BOARD 首板弱转强/回封 (10-factor, sum=1) ──
-    # 核心: 封板质量决定首板打板成功率
+    # ── FIRST_BOARD 首板弱转强/回封 (11-factor, sum=1) ──
+    # 核心: 封板质量 + 竞价承接决定首板打板成功率
     fb_sentiment_weight: float = 0.12
-    fb_seal_quality_weight: float = 0.22
+    fb_seal_quality_weight: float = 0.20
     fb_sector_weight: float = 0.12
     fb_survival_weight: float = 0.06
     fb_capital_flow_weight: float = 0.08
     fb_dragon_tiger_weight: float = 0.05
-    fb_event_catalyst_weight: float = 0.10
+    fb_event_catalyst_weight: float = 0.08
     fb_stock_sentiment_weight: float = 0.08
     fb_northbound_weight: float = 0.05
-    fb_technical_form_weight: float = 0.12
+    fb_technical_form_weight: float = 0.10
+    fb_auction_quality_weight: float = 0.06
 
-    # ── FOLLOW_BOARD 2-3板接力 (10-factor, sum=1) ──
-    # 核心: 连板生存率 + 高度动能决定接力成功率
+    # ── FOLLOW_BOARD 2-3板接力 (11-factor, sum=1) ──
+    # 核心: 连板生存率 + 高度动能 + 竞价承接决定接力成功率
     fl_sentiment_weight: float = 0.10
     fl_survival_weight: float = 0.22
     fl_height_momentum_weight: float = 0.15
-    fl_sector_weight: float = 0.10
+    fl_sector_weight: float = 0.08
     fl_capital_flow_weight: float = 0.05
-    fl_dragon_tiger_weight: float = 0.08
+    fl_dragon_tiger_weight: float = 0.06
     fl_event_catalyst_weight: float = 0.05
-    fl_stock_sentiment_weight: float = 0.12
+    fl_stock_sentiment_weight: float = 0.10
     fl_northbound_weight: float = 0.05
     fl_technical_form_weight: float = 0.08
+    fl_auction_quality_weight: float = 0.06
 
-    # ── SECTOR_LEADER 空间板龙头 (10-factor, sum=1) ──
+    # ── SECTOR_LEADER 空间板龙头 (11-factor, sum=1) ──
     # 核心: 板块热度 + 龙头地位决定空间板高度
     sl_sentiment_weight: float = 0.10
     sl_theme_heat_weight: float = 0.22
     sl_leader_position_weight: float = 0.15
     sl_sector_weight: float = 0.08
-    sl_capital_flow_weight: float = 0.08
-    sl_dragon_tiger_weight: float = 0.10
-    sl_event_catalyst_weight: float = 0.12
+    sl_capital_flow_weight: float = 0.06
+    sl_dragon_tiger_weight: float = 0.08
+    sl_event_catalyst_weight: float = 0.10
     sl_stock_sentiment_weight: float = 0.07
     sl_northbound_weight: float = 0.05
     sl_technical_form_weight: float = 0.03
+    sl_auction_quality_weight: float = 0.06
 
     # Board survival analysis
     survival_lookback_years: int = 6
@@ -129,6 +132,7 @@ class Settings(BaseSettings):
                 self.fb_capital_flow_weight, self.fb_dragon_tiger_weight,
                 self.fb_event_catalyst_weight, self.fb_stock_sentiment_weight,
                 self.fb_northbound_weight, self.fb_technical_form_weight,
+                self.fb_auction_quality_weight,
             ],
             "fl (FOLLOW_BOARD)": [
                 self.fl_sentiment_weight, self.fl_survival_weight,
@@ -136,6 +140,7 @@ class Settings(BaseSettings):
                 self.fl_capital_flow_weight, self.fl_dragon_tiger_weight,
                 self.fl_event_catalyst_weight, self.fl_stock_sentiment_weight,
                 self.fl_northbound_weight, self.fl_technical_form_weight,
+                self.fl_auction_quality_weight,
             ],
             "sl (SECTOR_LEADER)": [
                 self.sl_sentiment_weight, self.sl_theme_heat_weight,
@@ -143,6 +148,7 @@ class Settings(BaseSettings):
                 self.sl_capital_flow_weight, self.sl_dragon_tiger_weight,
                 self.sl_event_catalyst_weight, self.sl_stock_sentiment_weight,
                 self.sl_northbound_weight, self.sl_technical_form_weight,
+                self.sl_auction_quality_weight,
             ],
         }
         for name, weights in groups.items():

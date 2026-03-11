@@ -26,6 +26,7 @@ FACTOR_COLUMNS: tuple[str, ...] = (
     "stock_sentiment",
     "northbound",
     "technical_form",
+    "auction_quality",
     # FIRST_BOARD specific
     "seal_quality",
     # FOLLOW_BOARD specific
@@ -44,6 +45,7 @@ CONTEXT_COLUMNS: tuple[str, ...] = (
     "sig_sector_leader",
     "has_northbound_data",    # data availability
     "has_technical_data",
+    "has_auction_data",
 )
 
 ALL_COLUMNS: tuple[str, ...] = FACTOR_COLUMNS + CONTEXT_COLUMNS
@@ -91,6 +93,7 @@ def build_feature_vector(
     vec.append(1.0 if signal_type == "SECTOR_LEADER" else 0.0)
     vec.append(1.0 if coverage and coverage.has_hsgt else 0.0)
     vec.append(1.0 if coverage and coverage.has_stk_factor else 0.0)
+    vec.append(1.0 if coverage and coverage.has_auction else 0.0)
 
     return vec
 
