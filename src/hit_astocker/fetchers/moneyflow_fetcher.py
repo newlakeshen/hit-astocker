@@ -18,12 +18,6 @@ class MoneyFlowFetcher(FetcherBase):
             "moneyflow_ths", trade_date=date_str, fields=self._FIELDS,
         )
 
-    def _call_api_range(self, start_str: str, end_str: str) -> pd.DataFrame:
-        return self._client.query(
-            "moneyflow_ths", start_date=start_str, end_date=end_str,
-            fields=self._FIELDS, page_size=5000,
-        )
-
     def _transform(self, df: pd.DataFrame) -> list[dict]:
         records = []
         for _, row in df.iterrows():
