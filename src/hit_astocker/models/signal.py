@@ -29,3 +29,4 @@ class TradingSignal:
     factors: dict[str, float] = field(default_factory=dict)  # 各因子得分
     reason: str = ""  # 信号理由
     score_source: str = "rules"  # "rules" (规则打分) / "model" (ML模型)
+    theme: str = ""  # 所属题材/行业 (用于集中度控制)

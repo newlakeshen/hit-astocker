@@ -177,8 +177,7 @@ def signal_table(signals) -> Table:
     table.add_column("风险", width=6)
     table.add_column("仓位", width=5)
     table.add_column("核心", justify="right", width=5)
-    table.add_column("人气", justify="right", width=4)
-    table.add_column("北向", justify="right", width=4)
+    table.add_column("题材", width=8)
     table.add_column("理由", width=28)
 
     for i, sig in enumerate(signals[:15], 1):
@@ -195,8 +194,7 @@ def signal_table(signals) -> Table:
             key_val = f.get("theme_heat", 0)
             key_label = f"热{key_val:.0f}"
 
-        nb = f.get("northbound", 0)
-        pop = f.get("stock_sentiment", 0)
+        theme_display = sig.theme[:8] if hasattr(sig, "theme") and sig.theme else "-"
         type_label = _SIGNAL_TYPE_LABELS.get(sig_type, sig_type)
         table.add_row(
             str(i),
@@ -207,8 +205,7 @@ def signal_table(signals) -> Table:
             f"[{risk_color(sig.risk_level.value)}]{sig.risk_level.value}[/]",
             sig.position_hint,
             f"[{score_color(key_val)}]{key_label}[/]",
-            f"[{score_color(pop)}]{pop:.0f}[/]",
-            f"[{score_color(nb)}]{nb:.0f}[/]",
+            theme_display,
             sig.reason[:28],
         )
     return table

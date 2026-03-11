@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     signal_min_first_board_score: float = 70.0
     signal_top_sector_count: int = 3
 
+    # Portfolio constraints (信号 → 交易决策)
+    signal_min_score: float = 50.0       # 动态评分门槛 (基准值, 随行情/周期调整)
+    signal_top_k: int = 5                # 每日最多输出信号数
+    signal_max_per_theme: int = 2        # 单题材最大信号数 (防集中)
+    signal_max_per_type: int = 3         # 单板型最大信号数 (首板/连板/龙头)
+
     # First board scoring weights (5-factor, sum=1)
     first_board_seal_time_weight: float = 0.25
     first_board_seal_strength_weight: float = 0.20

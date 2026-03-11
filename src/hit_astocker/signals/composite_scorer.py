@@ -32,14 +32,23 @@ if TYPE_CHECKING:
 
 
 class ScoredCandidate:
-    __slots__ = ("ts_code", "name", "score", "factors", "signal_type")
+    __slots__ = ("ts_code", "name", "score", "factors", "signal_type", "theme")
 
-    def __init__(self, ts_code: str, name: str, score: float, factors: dict[str, float], signal_type: str):
+    def __init__(
+        self,
+        ts_code: str,
+        name: str,
+        score: float,
+        factors: dict[str, float],
+        signal_type: str,
+        theme: str = "",
+    ):
         self.ts_code = ts_code
         self.name = name
         self.score = score
         self.factors = factors
         self.signal_type = signal_type
+        self.theme = theme
 
 
 class CompositeScorer:
@@ -103,6 +112,7 @@ class CompositeScorer:
             clean = {k: v for k, v in raw.items() if v is not None}
             candidates.append(ScoredCandidate(
                 fb.ts_code, fb.name, round(composite, 2), clean, "FIRST_BOARD",
+                theme=fb.industry,
             ))
             scored_codes.add(fb.ts_code)
 
@@ -120,8 +130,12 @@ class CompositeScorer:
                 weights = _cycle_adjust_weights(_fl_weights(s), cycle, "FOLLOW_BOARD")
                 composite = _weighted_sum(raw, weights)
                 clean = {k: v for k, v in raw.items() if v is not None}
+                # 题材: 从事件分类获取, fallback 为空
+                ev = shared.event_map.get(code)
+                fl_theme = ev.theme if ev else ""
                 candidates.append(ScoredCandidate(
                     code, name, round(composite, 2), clean, "FOLLOW_BOARD",
+                    theme=fl_theme,
                 ))
                 scored_codes.add(code)
 
@@ -147,6 +161,7 @@ class CompositeScorer:
                     clean = {k: v for k, v in raw.items() if v is not None}
                     candidates.append(ScoredCandidate(
                         code, name, round(composite, 2), clean, "SECTOR_LEADER",
+                        theme=th.theme_name,
                     ))
                     scored_codes.add(code)
 

@@ -1,11 +1,11 @@
-"""Signal generation engine — two-stage pipeline.
+"""Signal generation engine — two-stage pipeline with portfolio constraints.
 
 Stage 1 (Hard filter): Remove non-tradeable samples via rule-based gates.
 Stage 2 (Cross-sectional ranking): Score survivors using either:
   - ML model (logistic / GBDT, when trained model exists)
   - Rule-based weighted scoring (fallback)
-
-Risk assessment runs AFTER scoring to determine position sizing.
+Stage 3 (Risk assessment): Determine position sizing per signal.
+Stage 4 (Portfolio constraints): Dynamic threshold + TopK + concentration limits.
 
 Supports two entry points:
   - generate_from_context(ctx) — preferred, uses pre-computed DailyAnalysisContext
@@ -19,6 +19,8 @@ from pathlib import Path
 
 from hit_astocker.config.settings import Settings, get_settings
 from hit_astocker.models.daily_context import DailyAnalysisContext, build_daily_context
+from hit_astocker.models.sentiment import SentimentScore
+from hit_astocker.models.sentiment_cycle import CyclePhase, SentimentCycle
 from hit_astocker.models.signal import RiskLevel, SignalType, TradingSignal
 from hit_astocker.signals.composite_scorer import CompositeScorer
 from hit_astocker.signals.feature_builder import build_feature_matrix
@@ -104,6 +106,9 @@ class SignalGenerator:
 
         signals = sorted(signals, key=lambda s: s.composite_score, reverse=True)
 
+        # ── Step 4: Portfolio constraints (score threshold + TopK + concentration) ──
+        signals = self._apply_portfolio_constraints(signals, ctx)
+
         # ── Optional: LLM-enhanced signal reasons ──
         if self._llm_client is not None and signals:
             signals = self._enhance_reasons_with_llm(signals, ctx)
@@ -153,6 +158,7 @@ class SignalGenerator:
                 factors=candidate.factors,
                 reason=reason,
                 score_source="model",
+                theme=candidate.theme,
             ))
 
         return signals
@@ -183,7 +189,83 @@ class SignalGenerator:
                 factors=candidate.factors,
                 reason=reason,
                 score_source="rules",
+                theme=candidate.theme,
             ))
+
+        return signals
+
+    # -- Step 4: Portfolio constraints ----------------------------------------
+
+    def _apply_portfolio_constraints(
+        self,
+        signals: list[TradingSignal],
+        ctx: DailyAnalysisContext,
+    ) -> list[TradingSignal]:
+        """Apply dynamic threshold, concentration limits, and TopK.
+
+        Signals must be pre-sorted by composite_score DESC.
+        Processing order:
+          1. Dynamic score threshold (市场状态自适应)
+          2. Per-theme concentration (单题材最多 N 只, 防抱团)
+          3. Per-type concentration (单板型最多 N 只, 防偏科)
+          4. TopK daily cap (每日最多 K 只)
+        """
+        s = self._settings
+        if not signals:
+            return signals
+
+        # ── 1. Dynamic score threshold ──
+        min_score = _dynamic_min_score(
+            s.signal_min_score, ctx.sentiment, ctx.sentiment_cycle,
+        )
+        signals = [sig for sig in signals if sig.composite_score >= min_score]
+        if not signals:
+            return signals
+
+        # ── 2. Per-theme concentration ──
+        max_theme = s.signal_max_per_theme
+        theme_counts: dict[str, int] = {}
+        theme_filtered: list[TradingSignal] = []
+        for sig in signals:
+            key = sig.theme
+            if not key:
+                # 无题材标记的信号不受题材限制
+                theme_filtered.append(sig)
+                continue
+            count = theme_counts.get(key, 0)
+            if count < max_theme:
+                theme_filtered.append(sig)
+                theme_counts[key] = count + 1
+            else:
+                logger.debug(
+                    "题材集中度过滤: %s (%s) — 题材 '%s' 已达上限 %d",
+                    sig.ts_code, sig.name, key, max_theme,
+                )
+        signals = theme_filtered
+
+        # ── 3. Per-type concentration ──
+        max_type = s.signal_max_per_type
+        type_counts: dict[str, int] = {}
+        type_filtered: list[TradingSignal] = []
+        for sig in signals:
+            key = sig.signal_type.value
+            count = type_counts.get(key, 0)
+            if count < max_type:
+                type_filtered.append(sig)
+                type_counts[key] = count + 1
+            else:
+                logger.debug(
+                    "板型集中度过滤: %s (%s) — %s 已达上限 %d",
+                    sig.ts_code, sig.name, key, max_type,
+                )
+        signals = type_filtered
+
+        # ── 4. TopK daily cap ──
+        if len(signals) > s.signal_top_k:
+            logger.info(
+                "TopK 截断: %d → %d", len(signals), s.signal_top_k,
+            )
+            signals = signals[: s.signal_top_k]
 
         return signals
 
@@ -222,6 +304,7 @@ class SignalGenerator:
                     factors=sig.factors,
                     reason=llm_reason,
                     score_source=sig.score_source,
+                    theme=sig.theme,
                 )
             enhanced.append(sig)
         return enhanced
@@ -289,3 +372,49 @@ class SignalGenerator:
             parts.append("个股情绪强")
 
         return "; ".join(parts) if parts else "综合评分达标"
+
+
+# ── Dynamic threshold ────────────────────────────────────────────────
+
+
+def _dynamic_min_score(
+    base: float,
+    sentiment: SentimentScore,
+    cycle: SentimentCycle | None,
+) -> float:
+    """Compute adaptive score threshold from market regime + sentiment cycle.
+
+    基准 50 → STRONG_BULL 可放宽到 42, STRONG_BEAR 收紧到 58.
+    ICE/RETREAT 额外 +8, DIVERGE +5 (防止弱势期低质信号通过).
+    CLIMAX 末期 +3 (警惕见顶), FERMENT -2 (正常放宽鼓励参与).
+    """
+    threshold = base
+
+    # ── 1. Market regime adjustment ──
+    ctx = sentiment.market_context
+    if ctx:
+        regime = ctx.market_regime
+        regime_adj = {
+            "STRONG_BULL": -8,
+            "BULL": -4,
+            "NEUTRAL": 0,
+            "BEAR": +5,
+            "STRONG_BEAR": +8,
+        }
+        threshold += regime_adj.get(regime, 0)
+
+    # ── 2. Sentiment cycle adjustment ──
+    if cycle:
+        phase = cycle.phase
+        if phase in (CyclePhase.ICE, CyclePhase.RETREAT):
+            threshold += 8
+        elif phase == CyclePhase.DIVERGE:
+            threshold += 5
+        elif phase == CyclePhase.REPAIR:
+            threshold += 3
+        elif phase == CyclePhase.CLIMAX and cycle.score_delta < -3:
+            threshold += 3  # 高潮末期
+        elif phase == CyclePhase.FERMENT:
+            threshold -= 2
+
+    return max(30.0, min(75.0, threshold))  # clamp to [30, 75]

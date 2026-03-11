@@ -12,7 +12,7 @@ from hit_astocker.models.daily_context import build_daily_context
 from hit_astocker.models.sentiment_cycle import CYCLE_PHASE_HINTS, CYCLE_PHASE_LABELS
 from hit_astocker.renderers.tables import signal_table
 from hit_astocker.renderers.theme import APP_THEME
-from hit_astocker.signals.signal_generator import SignalGenerator
+from hit_astocker.signals.signal_generator import SignalGenerator, _dynamic_min_score
 from hit_astocker.utils.date_utils import from_tushare_date
 
 signal_app = typer.Typer(name="signal", help="Trading signal generation")
@@ -23,10 +23,23 @@ console = Console(theme=APP_THEME)
 def signal(
     date_str: str = typer.Option(None, "--date", "-d", help="Trading date (YYYYMMDD)"),
     max_risk: str = typer.Option("HIGH", "--risk", "-r", help="Max risk level: LOW/MEDIUM/HIGH"),
+    top_k: int = typer.Option(0, "--top-k", "-k", help="Override daily TopK (0=use settings)"),
+    no_limit: bool = typer.Option(False, "--no-limit", help="Disable portfolio constraints (输出全量信号)"),
 ):
     """Generate and display trading signals."""
     settings = get_settings()
     trade_date = from_tushare_date(date_str) if date_str else date.today()
+
+    # CLI overrides
+    if top_k > 0:
+        settings = settings.model_copy(update={"signal_top_k": top_k})
+    if no_limit:
+        settings = settings.model_copy(update={
+            "signal_min_score": 0.0,
+            "signal_top_k": 999,
+            "signal_max_per_theme": 999,
+            "signal_max_per_type": 999,
+        })
 
     with get_connection(settings.db_path) as conn:
         ensure_schema(conn)
@@ -63,6 +76,18 @@ def signal(
             s for s in signals
             if risk_order.get(s.risk_level.value, 4) <= max_risk_val
         ]
+
+        # Portfolio constraints summary
+        if not no_limit:
+            min_score = _dynamic_min_score(
+                settings.signal_min_score, ctx.sentiment, ctx.sentiment_cycle,
+            )
+            console.print(
+                f"  [dim]筛选: 评分≥{min_score:.0f} | "
+                f"TopK={settings.signal_top_k} | "
+                f"单题材≤{settings.signal_max_per_theme} | "
+                f"单板型≤{settings.signal_max_per_type}[/]"
+            )
 
         if filtered:
             console.print(signal_table(filtered))
