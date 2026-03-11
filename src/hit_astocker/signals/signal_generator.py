@@ -30,12 +30,21 @@ logger = logging.getLogger(__name__)
 
 
 class SignalGenerator:
-    def __init__(self, conn: sqlite3.Connection, settings: Settings | None = None):
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        settings: Settings | None = None,
+        *,
+        llm_client=None,
+        llm_cache=None,
+    ):
         self._conn = conn
         self._settings = settings or get_settings()
         self._scorer = CompositeScorer(self._settings)
         self._risk_assessor = RiskAssessor()
         self._stage1_filter = Stage1Filter()
+        self._llm_client = llm_client
+        self._llm_cache = llm_cache
         # Try to load ML ranking model
         self._ranking_model = RankingModel()
         model_path = Path(self._settings.db_path).parent / "ranking_model.pkl"
@@ -87,7 +96,13 @@ class SignalGenerator:
         else:
             signals = self._rule_rank(survivors, ctx)
 
-        return sorted(signals, key=lambda s: s.composite_score, reverse=True)
+        signals = sorted(signals, key=lambda s: s.composite_score, reverse=True)
+
+        # ── Optional: LLM-enhanced signal reasons ──
+        if self._llm_client is not None and signals:
+            signals = self._enhance_reasons_with_llm(signals, ctx)
+
+        return signals
 
     # -- Stage 2a: ML-based ranking ------------------------------------------
 
@@ -167,6 +182,43 @@ class SignalGenerator:
         return signals
 
     # -- internals -----------------------------------------------------------
+
+    def _enhance_reasons_with_llm(
+        self, signals: list[TradingSignal], ctx: DailyAnalysisContext,
+    ) -> list[TradingSignal]:
+        """Replace rule-based reasons with LLM-generated ones (batch call)."""
+        try:
+            from hit_astocker.llm.narrative_gen import generate_signal_reasons
+            reason_map = generate_signal_reasons(
+                self._llm_client, signals,
+                event_result=ctx.event,
+                cache=self._llm_cache,
+            )
+        except Exception:
+            logger.warning("LLM signal reason enhancement failed", exc_info=True)
+            return signals
+
+        if not reason_map:
+            return signals
+
+        enhanced = []
+        for sig in signals:
+            llm_reason = reason_map.get(sig.ts_code)
+            if llm_reason:
+                sig = TradingSignal(
+                    trade_date=sig.trade_date,
+                    ts_code=sig.ts_code,
+                    name=sig.name,
+                    signal_type=sig.signal_type,
+                    composite_score=sig.composite_score,
+                    risk_level=sig.risk_level,
+                    position_hint=sig.position_hint,
+                    factors=sig.factors,
+                    reason=llm_reason,
+                    score_source=sig.score_source,
+                )
+            enhanced.append(sig)
+        return enhanced
 
     @staticmethod
     def _build_reason(candidate, sentiment, lianban, event_result=None) -> str:

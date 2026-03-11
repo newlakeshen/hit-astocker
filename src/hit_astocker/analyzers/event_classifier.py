@@ -96,7 +96,7 @@ _CONCEPT_INDUSTRY_KEYWORDS = frozenset({
 
 
 class EventClassifier:
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: sqlite3.Connection, *, llm_client=None, llm_cache=None):
         self._kpl_repo = KplRepository(conn)
         self._ann_repo = AnnouncementRepository(conn)
         self._concept_repo = ConceptRepository(conn)
@@ -104,6 +104,8 @@ class EventClassifier:
         self._step_repo = LimitStepRepository(conn)
         self._limit_repo = LimitListRepository(conn)
         self._conn = conn
+        self._llm_client = llm_client
+        self._llm_cache = llm_cache
 
     def analyze(self, trade_date: date) -> EventAnalysisResult:
         """Full event-driven analysis for a trading day (3-layer)."""
@@ -123,8 +125,11 @@ class EventClassifier:
             )
             stock_events.append(event)
 
-        # 2. Event type distribution
-        distribution: dict[str, int] = {}
+        # 2. LLM fallback for UNKNOWN events + recompute distributions
+        stock_events = self._llm_enhance_unknowns(stock_events, trade_date)
+
+        # Re-compute distribution after LLM enhancement
+        distribution = {}
         for ev in stock_events:
             distribution[ev.event_type] = distribution.get(ev.event_type, 0) + 1
 
@@ -133,8 +138,8 @@ class EventClassifier:
         else:
             dominant = EventType.UNKNOWN
 
-        # 3. Layer distribution (how many classified by each layer)
-        layer_dist: dict[str, int] = {}
+        # Re-compute layer distribution
+        layer_dist = {}
         for ev in stock_events:
             layer_dist[ev.event_layer] = layer_dist.get(ev.event_layer, 0) + 1
 
@@ -315,6 +320,100 @@ class EventClassifier:
             order_amount_level=order_amount_level,
             order_amount_wan=order_amount_wan,
         )
+
+    def _llm_enhance_unknowns(
+        self, stock_events: list[StockEvent], trade_date: date,
+    ) -> list[StockEvent]:
+        """Replace UNKNOWN events with LLM classifications (batch call)."""
+        if self._llm_client is None:
+            return stock_events
+
+        # Collect UNKNOWN stocks
+        unknowns = []
+        unknown_indices = []
+        for i, ev in enumerate(stock_events):
+            if ev.event_type == EventType.UNKNOWN:
+                unknowns.append({
+                    "code": ev.ts_code,
+                    "lu_desc": ev.lu_desc,
+                    "ann_title": ev.ann_title,
+                    "themes": list(ev.themes),
+                })
+                unknown_indices.append(i)
+
+        if not unknowns:
+            return stock_events
+
+        try:
+            from hit_astocker.llm.event_enhancer import EventEnhancer
+            enhancer = EventEnhancer(self._llm_client, cache=self._llm_cache)
+            results = enhancer.classify_batch(
+                unknowns, trade_date.strftime("%Y%m%d"),
+            )
+        except Exception:
+            logger.warning("LLM event enhancement failed", exc_info=True)
+            return stock_events
+
+        if not results:
+            return stock_events
+
+        # Build code → result map
+        result_map = {r.code: r for r in results}
+
+        # Replace UNKNOWN events with LLM results
+        for idx in unknown_indices:
+            ev = stock_events[idx]
+            llm_result = result_map.get(ev.ts_code)
+            if llm_result is None or llm_result.event_type == EventType.UNKNOWN:
+                continue
+            if llm_result.confidence < 0.5:
+                continue
+
+            # Compute weight for the LLM-classified event
+            policy_lvl = llm_result.policy_level or PolicyLevel.UNKNOWN
+            amount_lvl = OrderAmountLevel.UNKNOWN
+            amount_wan = llm_result.amount_wan
+            if amount_wan is not None:
+                if amount_wan >= 100000:
+                    amount_lvl = OrderAmountLevel.MEGA
+                elif amount_wan >= 10000:
+                    amount_lvl = OrderAmountLevel.LARGE
+                elif amount_wan >= 5000:
+                    amount_lvl = OrderAmountLevel.MEDIUM
+                else:
+                    amount_lvl = OrderAmountLevel.SMALL
+
+            weight = compute_event_weight(
+                llm_result.event_type, 0, ev.lu_desc,
+                policy_level=policy_lvl,
+                order_amount_level=amount_lvl,
+            )
+
+            stock_events[idx] = StockEvent(
+                ts_code=ev.ts_code,
+                name=ev.name,
+                lu_desc=ev.lu_desc,
+                event_type=llm_result.event_type,
+                event_types=(llm_result.event_type,),
+                event_weight=weight,
+                theme=ev.theme,
+                themes=ev.themes,
+                event_layer="LLM",
+                ann_title=ev.ann_title,
+                concepts=ev.concepts,
+                diffusion_rate=ev.diffusion_rate,
+                policy_level=policy_lvl,
+                order_amount_level=amount_lvl,
+                order_amount_wan=amount_wan,
+            )
+
+        logger.info(
+            "LLM enhanced %d/%d UNKNOWN events",
+            sum(1 for i in unknown_indices
+                if stock_events[i].event_layer == "LLM"),
+            len(unknowns),
+        )
+        return stock_events
 
     @staticmethod
     def _classify_from_announcements(anns: list) -> str:
@@ -617,11 +716,16 @@ class EventClassifier:
             ann_pct = layer_dist.get("ANNOUNCEMENT", 0) / total * 100
             cpt_pct = layer_dist.get("CONCEPT", 0) / total * 100
             kw_pct = layer_dist.get("KEYWORD", 0) / total * 100
+            llm_pct = layer_dist.get("LLM", 0) / total * 100
             unknown_count = distribution.get(EventType.UNKNOWN, 0)
-            parts.append(
+            coverage_str = (
                 f"识别: 公告{ann_pct:.0f}% 概念{cpt_pct:.0f}%"
-                f" 关键词{kw_pct:.0f}% 未知{unknown_count}"
+                f" 关键词{kw_pct:.0f}%"
             )
+            if llm_pct > 0:
+                coverage_str += f" LLM{llm_pct:.0f}%"
+            coverage_str += f" 未知{unknown_count}"
+            parts.append(coverage_str)
 
         if theme_heats:
             top3 = sum(th.today_count for th in theme_heats[:3])

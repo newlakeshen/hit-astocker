@@ -322,7 +322,7 @@ class StockEvent:
     theme: str  # 题材
     themes: tuple[str, ...]  # 拆分后的多题材
     # ── 三层识别增强 ──
-    event_layer: str = "KEYWORD"  # ANNOUNCEMENT / CONCEPT / KEYWORD
+    event_layer: str = "KEYWORD"  # ANNOUNCEMENT / CONCEPT / KEYWORD / LLM
     ann_title: str = ""  # 触发公告标题 (Layer 1)
     concepts: tuple[str, ...] = ()  # 所属概念 (Layer 2)
     diffusion_rate: float = 0.0  # 板块扩散率 (Layer 3, 0-1)

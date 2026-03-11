@@ -93,6 +93,9 @@ def build_daily_context(
     conn: sqlite3.Connection,
     settings,
     trade_date: date,
+    *,
+    llm_client=None,
+    llm_cache=None,
 ) -> DailyAnalysisContext:
     """Run all analyzers once and return an immutable context.
 
@@ -101,6 +104,8 @@ def build_daily_context(
     conn : sqlite3.Connection
     settings : hit_astocker.config.settings.Settings
     trade_date : date
+    llm_client : optional LLM client for event classification enhancement
+    llm_cache : optional LLM response cache
     """
     from hit_astocker.analyzers.board_survival import BoardSurvivalAnalyzer
     from hit_astocker.analyzers.dragon_tiger import DragonTigerAnalyzer
@@ -136,7 +141,7 @@ def build_daily_context(
     lianban = LianbanAnalyzer(conn).analyze(trade_date)
     sector = SectorRotationAnalyzer(conn).analyze(trade_date)
     dragon = DragonTigerAnalyzer(conn).analyze(trade_date)
-    event = EventClassifier(conn).analyze(trade_date)
+    event = EventClassifier(conn, llm_client=llm_client, llm_cache=llm_cache).analyze(trade_date)
     survival_model = BoardSurvivalAnalyzer(conn).compute_model(trade_date)
     hsgt_net_map = HsgtTop10Repository(conn).find_net_buyers_by_date(trade_date)
 

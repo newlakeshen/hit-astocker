@@ -1,5 +1,6 @@
 """Daily dashboard command."""
 
+import logging
 from datetime import date
 
 import typer
@@ -15,8 +16,31 @@ from hit_astocker.renderers.theme import APP_THEME
 from hit_astocker.signals.signal_generator import SignalGenerator
 from hit_astocker.utils.date_utils import from_tushare_date
 
+logger = logging.getLogger(__name__)
 daily_app = typer.Typer(name="daily", help="Full daily analysis dashboard")
 console = Console(theme=APP_THEME)
+
+
+def _init_llm(settings, conn):
+    """Initialize LLM client and cache if enabled. Returns (client, cache)."""
+    if not settings.llm_enabled:
+        return None, None
+
+    try:
+        from hit_astocker.llm.cache import LLMCache
+        from hit_astocker.llm.client import get_llm_client
+
+        client = get_llm_client(settings)
+        # NullClient check
+        from hit_astocker.llm.client import NullClient
+        if isinstance(client, NullClient):
+            return None, None
+
+        cache = LLMCache(conn)
+        return client, cache
+    except Exception:
+        logger.warning("LLM initialization failed", exc_info=True)
+        return None, None
 
 
 @daily_app.callback(invoke_without_command=True)
@@ -39,14 +63,26 @@ def daily(
         repo = LimitListRepository(conn)
         counts = repo.count_by_type(trade_date)
         if sum(counts.values()) == 0:
-            console.print(f"[yellow]No data for {trade_date}. Run 'hit-astocker sync -d {date_str or trade_date.strftime('%Y%m%d')}' first.[/]")
+            date_hint = date_str or trade_date.strftime("%Y%m%d")
+            console.print(
+                f"[yellow]No data for {trade_date}."
+                f" Run 'hit-astocker sync -d {date_hint}' first.[/]"
+            )
             raise typer.Exit(1)
 
+        # Initialize LLM (optional)
+        llm_client, llm_cache = _init_llm(settings, conn)
+
         # Build context ONCE — all analyzers run here
-        ctx = build_daily_context(conn, settings, trade_date)
+        ctx = build_daily_context(
+            conn, settings, trade_date,
+            llm_client=llm_client, llm_cache=llm_cache,
+        )
 
         # Generate signals from pre-computed context (no re-computation)
-        signals = SignalGenerator(conn, settings).generate_from_context(ctx)
+        signals = SignalGenerator(
+            conn, settings, llm_client=llm_client, llm_cache=llm_cache,
+        ).generate_from_context(ctx)
 
         # Sentiment cycle display
         if ctx.sentiment_cycle:
@@ -70,6 +106,19 @@ def daily(
                 "运行 sync 补齐数据后自动启用。[/]\n"
             )
 
+        # LLM daily narrative (after all analysis, before rendering)
+        narrative = ""
+        if llm_client is not None:
+            try:
+                from hit_astocker.llm.narrative_gen import generate_daily_narrative
+                narrative = generate_daily_narrative(
+                    llm_client, ctx,
+                    cache=llm_cache,
+                    use_thinking=settings.kimi_use_thinking,
+                )
+            except Exception:
+                logger.warning("LLM narrative generation failed", exc_info=True)
+
         render_dashboard(
             console,
             ctx.sentiment,
@@ -79,4 +128,5 @@ def daily(
             ctx.dragon,
             signals,
             event_result=ctx.event,
+            narrative=narrative,
         )

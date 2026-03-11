@@ -203,6 +203,30 @@ def backtest(
         if detail and all_trades:
             _render_detail(all_trades)
 
+        # LLM backtest narrative (optional)
+        if settings.llm_enabled:
+            try:
+                from hit_astocker.llm.cache import LLMCache
+                from hit_astocker.llm.client import NullClient, get_llm_client
+                from hit_astocker.llm.narrative_gen import generate_backtest_narrative
+
+                llm_client = get_llm_client(settings)
+                if not isinstance(llm_client, NullClient):
+                    llm_cache = LLMCache(conn)
+                    bt_narrative = generate_backtest_narrative(
+                        llm_client, stats, all_trades,
+                        cache=llm_cache,
+                        use_thinking=True,
+                    )
+                    if bt_narrative:
+                        console.print(Panel(
+                            bt_narrative,
+                            title="🤖 AI 策略分析",
+                            border_style="magenta",
+                        ))
+            except Exception:
+                logger.warning("LLM backtest narrative failed", exc_info=True)
+
 
 # ── Render functions ─────────────────────────────────────────────
 

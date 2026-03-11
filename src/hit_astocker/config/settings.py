@@ -86,6 +86,14 @@ class Settings(BaseSettings):
     api_batch_size: int = 50
     api_timeout: int = 120
 
+    # ── LLM (Kimi K2.5) ──
+    llm_enabled: bool = False
+    kimi_api_key: str = ""
+    kimi_model: str = "kimi-k2.5"
+    kimi_base_url: str = "https://api.moonshot.cn/v1"
+    kimi_max_tokens: int = 2000
+    kimi_use_thinking: bool = False  # 默认 Instant 模式
+
     model_config = {"env_prefix": "", "env_file": ".env", "extra": "ignore"}
 
     @model_validator(mode="after")

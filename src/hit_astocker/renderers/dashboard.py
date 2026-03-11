@@ -31,6 +31,7 @@ def render_dashboard(
     dragon: DragonTigerResult,
     signals: list[TradingSignal],
     event_result: EventAnalysisResult | None = None,
+    narrative: str = "",
 ) -> None:
     """Render the full daily dashboard."""
     # Header with market context
@@ -56,6 +57,10 @@ def render_dashboard(
 
     header.append("\n")
     console.print(Panel(header, border_style="cyan"))
+
+    # LLM market narrative (if available)
+    if narrative:
+        _render_narrative(console, narrative)
 
     # Sentiment overview
     console.print(sentiment_table(sentiment))
@@ -133,4 +138,15 @@ def _render_event_summary(console: Console, event_result: EventAnalysisResult) -
             )
         console.print(table)
 
+    console.print()
+
+
+def _render_narrative(console: Console, narrative: str) -> None:
+    """Render LLM-generated market narrative panel."""
+    console.print(Panel(
+        narrative,
+        title="🤖 AI 市场综述",
+        border_style="magenta",
+        padding=(0, 1),
+    ))
     console.print()
