@@ -16,10 +16,19 @@ class IndexDailyFetcher(FetcherBase):
         frames = []
         for code in INDEX_CODES.split(","):
             df = self._client.query(
-                "index_daily",
-                ts_code=code,
-                trade_date=date_str,
-                fields=FIELDS,
+                "index_daily", ts_code=code, trade_date=date_str, fields=FIELDS,
+            )
+            if not df.empty:
+                frames.append(df)
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    def _call_api_range(self, start_str: str, end_str: str) -> pd.DataFrame:
+        frames = []
+        for code in INDEX_CODES.split(","):
+            df = self._client.query(
+                "index_daily", ts_code=code,
+                start_date=start_str, end_date=end_str,
+                fields=FIELDS, page_size=5000,
             )
             if not df.empty:
                 frames.append(df)

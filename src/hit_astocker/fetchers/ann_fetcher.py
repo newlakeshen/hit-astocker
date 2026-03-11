@@ -9,10 +9,12 @@ FIELDS = "ts_code,ann_date,title,ann_type,content"
 
 class AnnouncementFetcher(FetcherBase):
     def _call_api(self, date_str: str) -> pd.DataFrame:
+        return self._client.query("anns_d", ann_date=date_str, fields=FIELDS)
+
+    def _call_api_range(self, start_str: str, end_str: str) -> pd.DataFrame:
         return self._client.query(
-            "anns_d",
-            ann_date=date_str,
-            fields=FIELDS,
+            "anns_d", start_date=start_str, end_date=end_str,
+            fields=FIELDS, page_size=5000,
         )
 
     def _transform(self, df: pd.DataFrame) -> list[dict]:

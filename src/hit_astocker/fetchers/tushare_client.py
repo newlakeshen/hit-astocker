@@ -20,11 +20,15 @@ class TushareClient:
     def pro(self):
         return self._pro
 
-    def query(self, api_name: str, fields: str = "", **kwargs) -> pd.DataFrame:
+    def query(
+        self, api_name: str, fields: str = "", *, page_size: int = 0, **kwargs,
+    ) -> pd.DataFrame:
         """Call a Tushare Pro API with automatic pagination (limit/offset).
 
-        Each page fetches at most `self._batch_size` records, then merges.
+        Each page fetches at most ``page_size`` records (default: self._batch_size).
+        Use a larger page_size (e.g. 5000) for bulk date-range queries.
         """
+        batch = page_size or self._batch_size
         all_dfs: list[pd.DataFrame] = []
         offset = 0
 
@@ -34,10 +38,10 @@ class TushareClient:
 
             logger.info(
                 "Calling Tushare API: %s offset=%d limit=%d params=%s",
-                api_name, offset, self._batch_size, kwargs,
+                api_name, offset, batch, kwargs,
             )
             try:
-                call_kwargs = {**kwargs, "limit": self._batch_size, "offset": offset}
+                call_kwargs = {**kwargs, "limit": batch, "offset": offset}
                 if fields:
                     df = self._pro.query(api_name, fields=fields, **call_kwargs)
                 else:
@@ -53,7 +57,7 @@ class TushareClient:
             fetched = len(df)
             logger.info("Got %d records from %s (offset=%d)", fetched, api_name, offset)
 
-            if fetched < self._batch_size:
+            if fetched < batch:
                 break
             offset += fetched
 

@@ -42,13 +42,25 @@ def sync(
         if start and end:
             start_date = from_tushare_date(start)
             end_date = from_tushare_date(end)
+            day_span = (end_date - start_date).days
             console.print(f"Syncing date range: {start} ~ {end}")
-            all_results = orchestrator.sync_date_range(start_date, end_date)
-            total = sum(
-                sum(v for v in day_results.values() if v > 0)
-                for day_results in all_results.values()
-            )
-            console.print(f"[green]Sync complete: {len(all_results)} days, {total} total records[/]")
+
+            if day_span > 5:
+                # Use bulk batch mode for large ranges (>5 days)
+                results = orchestrator.sync_date_range_bulk(start_date, end_date)
+                total = sum(v for v in results.values() if v > 0)
+                console.print(f"[green]Sync complete: {total} total records[/]")
+            else:
+                # Small range: use per-day mode
+                all_results = orchestrator.sync_date_range(start_date, end_date)
+                total = sum(
+                    sum(v for v in day_results.values() if v > 0)
+                    for day_results in all_results.values()
+                )
+                console.print(
+                    f"[green]Sync complete: {len(all_results)} days, "
+                    f"{total} total records[/]"
+                )
         else:
             if date_str:
                 target = from_tushare_date(date_str)

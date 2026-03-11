@@ -16,10 +16,13 @@ class LimitUpFetcher(FetcherBase):
 
     def _call_api(self, date_str: str) -> pd.DataFrame:
         return self._client.query(
-            "limit_list_d",
-            trade_date=date_str,
-            limit_type="U",
-            fields=FIELDS,
+            "limit_list_d", trade_date=date_str, limit_type="U", fields=FIELDS,
+        )
+
+    def _call_api_range(self, start_str: str, end_str: str) -> pd.DataFrame:
+        return self._client.query(
+            "limit_list_d", start_date=start_str, end_date=end_str,
+            limit_type="U", fields=FIELDS, page_size=5000,
         )
 
     def _transform(self, df: pd.DataFrame) -> list[dict]:
@@ -31,10 +34,13 @@ class LimitDownFetcher(FetcherBase):
 
     def _call_api(self, date_str: str) -> pd.DataFrame:
         return self._client.query(
-            "limit_list_d",
-            trade_date=date_str,
-            limit_type="D",
-            fields=FIELDS,
+            "limit_list_d", trade_date=date_str, limit_type="D", fields=FIELDS,
+        )
+
+    def _call_api_range(self, start_str: str, end_str: str) -> pd.DataFrame:
+        return self._client.query(
+            "limit_list_d", start_date=start_str, end_date=end_str,
+            limit_type="D", fields=FIELDS, page_size=5000,
         )
 
     def _transform(self, df: pd.DataFrame) -> list[dict]:
@@ -46,10 +52,13 @@ class BrokenBoardFetcher(FetcherBase):
 
     def _call_api(self, date_str: str) -> pd.DataFrame:
         return self._client.query(
-            "limit_list_d",
-            trade_date=date_str,
-            limit_type="Z",
-            fields=FIELDS,
+            "limit_list_d", trade_date=date_str, limit_type="Z", fields=FIELDS,
+        )
+
+    def _call_api_range(self, start_str: str, end_str: str) -> pd.DataFrame:
+        return self._client.query(
+            "limit_list_d", start_date=start_str, end_date=end_str,
+            limit_type="Z", fields=FIELDS, page_size=5000,
         )
 
     def _transform(self, df: pd.DataFrame) -> list[dict]:

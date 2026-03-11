@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import Any
 
+from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from hit_astocker.config.settings import Settings
@@ -291,7 +292,10 @@ class SyncOrchestrator:
             self._conn.commit()
 
     def sync_date_range(self, start: date, end: date) -> dict[str, dict[str, int]]:
-        """Sync all APIs for a date range (real trading days only)."""
+        """Sync all APIs for a date range (real trading days only).
+
+        Legacy per-day loop. Use ``sync_date_range_bulk()`` for large ranges.
+        """
         self.ensure_trade_calendar()
         from hit_astocker.utils.trade_calendar import get_trade_calendar
 
@@ -304,6 +308,213 @@ class SyncOrchestrator:
             all_results[to_tushare_date(d)] = self.sync_date(d)
         return all_results
 
+    def sync_date_range_bulk(self, start: date, end: date) -> dict[str, int]:
+        """Sync a large date range using batch API calls (月度分块).
+
+        Batchable APIs use start_date/end_date range queries (1 call per month).
+        Non-batchable APIs (ths_hot, hm_detail) still use per-day calls.
+        On-demand APIs (stk_factor_pro, concept_detail, ths_member) run per-day
+        after bulk data is available.
+
+        Returns {api_name: total_record_count}.
+        """
+        self.ensure_trade_calendar()
+        self.ensure_hm_list()
+
+        from hit_astocker.utils.trade_calendar import get_trade_calendar
+        cal = get_trade_calendar()
+        trading_dates = cal.get_trading_days_between(start, end)
+        if not trading_dates:
+            logger.warning("No trading days in range %s ~ %s", start, end)
+            return {}
+
+        console = Console()
+        results: dict[str, int] = {}
+
+        # Split registry into batchable vs per-day
+        batchable = []
+        per_day = []
+        for api_name, table_name, fetcher_cls, kwargs in API_REGISTRY:
+            fetcher = fetcher_cls(self._client, **kwargs)
+            if fetcher.supports_range():
+                batchable.append((api_name, table_name, fetcher_cls, kwargs))
+            else:
+                per_day.append((api_name, table_name, fetcher_cls, kwargs))
+
+        # ── Phase 1: Batch APIs (monthly chunks, parallel fetch) ──
+        chunks = _monthly_chunks(start, end)
+        console.print(
+            f"[cyan]Phase 1: 批量同步 {len(batchable)} 个API × "
+            f"{len(chunks)} 个月度分块[/]"
+        )
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            for chunk_idx, (c_start, c_end) in enumerate(chunks):
+                c_start_str = to_tushare_date(c_start)
+                c_end_str = to_tushare_date(c_end)
+                task = progress.add_task(
+                    f"[{chunk_idx + 1}/{len(chunks)}] {c_start_str}~{c_end_str}",
+                    total=None,
+                )
+
+                # Fetch all batchable APIs for this month in parallel
+                fetched: dict[str, tuple[str, list | None]] = {}
+
+                def _fetch_batch(item, cs=c_start, ce=c_end):
+                    api_name, _table, fetcher_cls, kwargs = item
+                    fetcher = fetcher_cls(self._client, **kwargs)
+                    return api_name, fetcher.fetch_range(cs, ce)
+
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    futures = {
+                        pool.submit(_fetch_batch, item): item
+                        for item in batchable
+                    }
+                    for future in as_completed(futures):
+                        item = futures[future]
+                        api_name = item[0]
+                        table_name = item[1]
+                        try:
+                            _, records = future.result()
+                            fetched[api_name] = (table_name, records or [])
+                        except Exception as e:
+                            logger.error(
+                                "Batch fetch failed for %s (%s~%s): %s",
+                                api_name, c_start_str, c_end_str, e,
+                            )
+                            fetched[api_name] = (table_name, None)
+
+                # Write to DB sequentially
+                for api_name, table_name, _, _ in batchable:
+                    table, records = fetched.get(api_name, (table_name, None))
+                    if records is None:
+                        results[api_name] = results.get(api_name, 0)
+                        self._log_sync(
+                            api_name, f"{c_start_str}~{c_end_str}",
+                            0, "error", "batch fetch failed",
+                        )
+                    elif records:
+                        repo = BaseRepository(self._conn, table)
+                        count = repo.upsert_many(records)
+                        results[api_name] = results.get(api_name, 0) + count
+                        self._log_sync(
+                            api_name, f"{c_start_str}~{c_end_str}",
+                            count, "success",
+                        )
+                    else:
+                        results[api_name] = results.get(api_name, 0)
+
+                self._conn.commit()
+                progress.update(task, completed=True)
+
+        # ── Phase 2: Per-day APIs (ths_hot, hm_detail) ──
+        if per_day:
+            console.print(
+                f"[cyan]Phase 2: 逐日同步 {len(per_day)} 个API × "
+                f"{len(trading_dates)} 个交易日[/]"
+            )
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                task = progress.add_task(
+                    "Per-day APIs...", total=len(trading_dates),
+                )
+                for d in trading_dates:
+                    date_str = to_tushare_date(d)
+
+                    def _fetch_one(item, td=d):
+                        api_name, _table, fetcher_cls, kwargs = item
+                        fetcher = fetcher_cls(self._client, **kwargs)
+                        return api_name, fetcher.fetch(td)
+
+                    fetched_day: dict[str, tuple[str, list | None]] = {}
+                    with ThreadPoolExecutor(max_workers=4) as pool:
+                        futures = {
+                            pool.submit(_fetch_one, item): item
+                            for item in per_day
+                        }
+                        for future in as_completed(futures):
+                            item = futures[future]
+                            api_name = item[0]
+                            table_name = item[1]
+                            try:
+                                _, records = future.result()
+                                fetched_day[api_name] = (table_name, records or [])
+                            except Exception as e:
+                                logger.error(
+                                    "Fetch failed for %s on %s: %s",
+                                    api_name, date_str, e,
+                                )
+                                fetched_day[api_name] = (table_name, None)
+
+                    for api_name, table_name, _, _ in per_day:
+                        table, records = fetched_day.get(
+                            api_name, (table_name, None),
+                        )
+                        if records is None:
+                            results[api_name] = results.get(api_name, 0)
+                            self._log_sync(api_name, date_str, 0, "error")
+                        elif records:
+                            repo = BaseRepository(self._conn, table)
+                            count = repo.upsert_many(records)
+                            results[api_name] = (
+                                results.get(api_name, 0) + count
+                            )
+                            self._log_sync(api_name, date_str, count, "success")
+                        else:
+                            results[api_name] = results.get(api_name, 0)
+
+                    if int(date_str) % 100 == 0:  # commit every ~month
+                        self._conn.commit()
+                    progress.advance(task)
+
+                self._conn.commit()
+
+        # ── Phase 3: On-demand per-stock APIs ──
+        console.print(
+            f"[cyan]Phase 3: 按需同步 (stk_factor_pro, concept_detail, "
+            f"ths_member) × {len(trading_dates)} 个交易日[/]"
+        )
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task(
+                "On-demand APIs...", total=len(trading_dates),
+            )
+            for d in trading_dates:
+                date_str = to_tushare_date(d)
+                stk_count = self._sync_stk_factors(date_str)
+                results["stk_factor_pro"] = (
+                    results.get("stk_factor_pro", 0) + stk_count
+                )
+                concept_count = self._sync_concept_detail(date_str)
+                results["concept_detail"] = (
+                    results.get("concept_detail", 0) + concept_count
+                )
+                ths_count = self._sync_ths_members(date_str)
+                results["ths_member"] = (
+                    results.get("ths_member", 0) + ths_count
+                )
+                if int(date_str) % 100 == 0:
+                    self._conn.commit()
+                progress.advance(task)
+
+            self._conn.commit()
+
+        console.print(
+            f"[green]批量同步完成: "
+            f"{sum(v for v in results.values() if v > 0)} 条记录[/]"
+        )
+        return results
+
     def _log_sync(
         self, api_name: str, date_str: str, count: int, status: str, error: str = ""
     ) -> None:
@@ -312,3 +523,27 @@ class SyncOrchestrator:
                VALUES (?, ?, ?, ?, ?)""",
             (api_name, date_str, count, status, error),
         )
+
+
+def _monthly_chunks(start: date, end: date) -> list[tuple[date, date]]:
+    """Split a date range into monthly chunks.
+
+    Each chunk is (month_start, month_end) where month_end is the last
+    calendar day of the month or ``end`` (whichever is earlier).
+    """
+    import calendar
+
+    chunks: list[tuple[date, date]] = []
+    current = start
+    while current <= end:
+        year, month = current.year, current.month
+        last_day = calendar.monthrange(year, month)[1]
+        month_end = date(year, month, last_day)
+        chunk_end = min(month_end, end)
+        chunks.append((current, chunk_end))
+        # Move to first day of next month
+        if month == 12:
+            current = date(year + 1, 1, 1)
+        else:
+            current = date(year, month + 1, 1)
+    return chunks

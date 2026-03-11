@@ -16,10 +16,19 @@ class HsgtTop10Fetcher(FetcherBase):
         frames = []
         for market_type in ("1", "3"):  # 1=沪股通, 3=深股通
             df = self._client.query(
-                "hsgt_top10",
-                trade_date=date_str,
-                market_type=market_type,
-                fields=FIELDS,
+                "hsgt_top10", trade_date=date_str,
+                market_type=market_type, fields=FIELDS,
+            )
+            if not df.empty:
+                frames.append(df)
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+    def _call_api_range(self, start_str: str, end_str: str) -> pd.DataFrame:
+        frames = []
+        for market_type in ("1", "3"):
+            df = self._client.query(
+                "hsgt_top10", start_date=start_str, end_date=end_str,
+                market_type=market_type, fields=FIELDS, page_size=5000,
             )
             if not df.empty:
                 frames.append(df)

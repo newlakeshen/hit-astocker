@@ -11,15 +11,20 @@ class KplFetcher(FetcherBase):
         super().__init__(client)
         self._tag = tag
 
+    _FIELDS = (
+        "ts_code,name,trade_date,lu_time,ld_time,lu_desc,tag,theme,"
+        "net_change,bid_amount,status,pct_chg,amount,turnover_rate,lu_limit_order"
+    )
+
     def _call_api(self, date_str: str) -> pd.DataFrame:
         return self._client.query(
-            "kpl_list",
-            trade_date=date_str,
-            tag=self._tag,
-            fields=(
-                "ts_code,name,trade_date,lu_time,ld_time,lu_desc,tag,theme,"
-                "net_change,bid_amount,status,pct_chg,amount,turnover_rate,lu_limit_order"
-            ),
+            "kpl_list", trade_date=date_str, tag=self._tag, fields=self._FIELDS,
+        )
+
+    def _call_api_range(self, start_str: str, end_str: str) -> pd.DataFrame:
+        return self._client.query(
+            "kpl_list", start_date=start_str, end_date=end_str,
+            tag=self._tag, fields=self._FIELDS, page_size=5000,
         )
 
     def _transform(self, df: pd.DataFrame) -> list[dict]:

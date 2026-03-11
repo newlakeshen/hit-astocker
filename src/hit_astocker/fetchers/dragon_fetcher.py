@@ -9,15 +9,21 @@ from hit_astocker.fetchers.limit_fetcher import _safe_float
 class DragonTigerFetcher(FetcherBase):
     """Fetch dragon-tiger board daily data."""
 
+    _FIELDS = (
+        "trade_date,ts_code,name,close,pct_change,turnover_rate,"
+        "amount,l_sell,l_buy,l_amount,net_amount,net_rate,"
+        "amount_rate,float_values,reason"
+    )
+
     def _call_api(self, date_str: str) -> pd.DataFrame:
         return self._client.query(
-            "top_list",
-            trade_date=date_str,
-            fields=(
-                "trade_date,ts_code,name,close,pct_change,turnover_rate,"
-                "amount,l_sell,l_buy,l_amount,net_amount,net_rate,"
-                "amount_rate,float_values,reason"
-            ),
+            "top_list", trade_date=date_str, fields=self._FIELDS,
+        )
+
+    def _call_api_range(self, start_str: str, end_str: str) -> pd.DataFrame:
+        return self._client.query(
+            "top_list", start_date=start_str, end_date=end_str,
+            fields=self._FIELDS, page_size=5000,
         )
 
     def _transform(self, df: pd.DataFrame) -> list[dict]:
@@ -46,11 +52,17 @@ class DragonTigerFetcher(FetcherBase):
 class InstitutionalFetcher(FetcherBase):
     """Fetch institutional trading details."""
 
+    _FIELDS = "trade_date,ts_code,exalter,side,buy,buy_rate,sell,sell_rate,net_buy,reason"
+
     def _call_api(self, date_str: str) -> pd.DataFrame:
         return self._client.query(
-            "top_inst",
-            trade_date=date_str,
-            fields="trade_date,ts_code,exalter,side,buy,buy_rate,sell,sell_rate,net_buy,reason",
+            "top_inst", trade_date=date_str, fields=self._FIELDS,
+        )
+
+    def _call_api_range(self, start_str: str, end_str: str) -> pd.DataFrame:
+        return self._client.query(
+            "top_inst", start_date=start_str, end_date=end_str,
+            fields=self._FIELDS, page_size=5000,
         )
 
     def _transform(self, df: pd.DataFrame) -> list[dict]:
