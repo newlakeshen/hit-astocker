@@ -31,6 +31,7 @@ class DataCoverage:
     has_hsgt: bool = False          # hsgt_top10 (北向资金 → northbound factor)
     has_stk_factor: bool = False    # stk_factor_pro (技术因子 → technical_form)
     has_hm: bool = False            # hm_detail (游资席位 → dragon_tiger boost)
+    has_auction: bool = False       # stk_auction (竞价 → sentiment auction factor)
 
     @property
     def missing_sources(self) -> list[str]:
@@ -44,15 +45,23 @@ class DataCoverage:
             names.append("stk_factor_pro (技术因子)")
         if not self.has_hm:
             names.append("hm_detail (游资席位)")
+        if not self.has_auction:
+            names.append("stk_auction (集合竞价)")
         return names
 
     @property
     def active_count(self) -> int:
-        return sum([self.has_ths_hot, self.has_hsgt, self.has_stk_factor, self.has_hm])
+        return sum([
+            self.has_ths_hot,
+            self.has_hsgt,
+            self.has_stk_factor,
+            self.has_hm,
+            self.has_auction,
+        ])
 
     @property
     def total_count(self) -> int:
-        return 4
+        return 5
 
 
 @dataclass(frozen=True)
@@ -89,6 +98,30 @@ def table_has_data(conn: sqlite3.Connection, table: str) -> bool:
         return False
 
 
+def table_has_data_for_date(
+    conn: sqlite3.Connection,
+    table: str,
+    trade_date: date,
+    *,
+    date_column: str = "trade_date",
+) -> bool:
+    """Check whether a table has at least one row for a specific trading date."""
+    try:
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if not exists:
+            return False
+        row = conn.execute(
+            f"SELECT 1 FROM [{table}] WHERE [{date_column}] = ? LIMIT 1",  # noqa: S608
+            (trade_date.strftime("%Y%m%d"),),
+        ).fetchone()
+        return row is not None
+    except sqlite3.OperationalError:
+        return False
+
+
 def build_daily_context(
     conn: sqlite3.Connection,
     settings,
@@ -120,10 +153,11 @@ def build_daily_context(
 
     # ── Data coverage detection (one-time O(1) checks) ──
     coverage = DataCoverage(
-        has_ths_hot=table_has_data(conn, "ths_hot"),
-        has_hsgt=table_has_data(conn, "hsgt_top10"),
-        has_stk_factor=table_has_data(conn, "stk_factor_pro"),
-        has_hm=table_has_data(conn, "hm_detail"),
+        has_ths_hot=table_has_data_for_date(conn, "ths_hot", trade_date),
+        has_hsgt=table_has_data_for_date(conn, "hsgt_top10", trade_date),
+        has_stk_factor=table_has_data_for_date(conn, "stk_factor_pro", trade_date),
+        has_hm=table_has_data_for_date(conn, "hm_detail", trade_date),
+        has_auction=table_has_data_for_date(conn, "stk_auction", trade_date),
     )
 
     # Phase 1: independent analyzers (+ cycle detection)

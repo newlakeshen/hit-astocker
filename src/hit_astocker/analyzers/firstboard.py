@@ -21,6 +21,7 @@ from hit_astocker.config.constants import (
 from hit_astocker.config.settings import Settings, get_settings
 from hit_astocker.models.analysis_result import FirstBoardResult
 from hit_astocker.models.limit_data import LimitRecord
+from hit_astocker.repositories.kpl_repo import KplRepository, split_themes
 from hit_astocker.repositories.limit_repo import LimitListRepository
 from hit_astocker.repositories.sector_repo import SectorRepository
 
@@ -28,6 +29,7 @@ from hit_astocker.repositories.sector_repo import SectorRepository
 class FirstBoardAnalyzer:
     def __init__(self, conn: sqlite3.Connection, settings: Settings | None = None):
         self._limit_repo = LimitListRepository(conn)
+        self._kpl_repo = KplRepository(conn)
         self._sector_repo = SectorRepository(conn)
         self._settings = settings or get_settings()
 
@@ -37,22 +39,32 @@ class FirstBoardAnalyzer:
             return []
 
         top_sectors = self._sector_repo.find_sector_names_by_date(trade_date, top_n=5)
+        kpl_map = {
+            rec.ts_code: rec
+            for rec in self._kpl_repo.find_by_tag(trade_date, tag="涨停")
+        }
 
         results = []
         for record in first_boards:
-            result = self._score_stock(record, top_sectors)
+            result = self._score_stock(record, top_sectors, kpl_map.get(record.ts_code))
             results.append(result)
 
         return sorted(results, key=lambda r: r.composite_score, reverse=True)
 
-    def _score_stock(self, record: LimitRecord, top_sectors: set[str]) -> FirstBoardResult:
+    def _score_stock(
+        self,
+        record: LimitRecord,
+        top_sectors: set[str],
+        kpl_record=None,
+    ) -> FirstBoardResult:
         s = self._settings
 
         seal_time_score = self._score_seal_time(record.first_time)
-        seal_strength_score = self._score_seal_strength(record.limit_amount, record.float_mv)
+        seal_amount = self._resolve_seal_amount(record, kpl_record)
+        seal_strength_score = self._score_seal_strength(seal_amount, record.float_mv)
         purity_score = self._score_purity(record.open_times)
         turnover_score = self._score_turnover(record.turnover_ratio, record.open_times)
-        sector_score, sector_name = self._score_sector(record.industry, top_sectors)
+        sector_score, sector_name = self._score_sector(record.industry, top_sectors, kpl_record)
 
         composite = (
             s.first_board_seal_time_weight * seal_time_score
@@ -77,11 +89,18 @@ class FirstBoardAnalyzer:
             composite_score=round(composite, 2),
             first_time=record.first_time,
             open_times=record.open_times,
-            limit_amount=record.limit_amount,
+            limit_amount=seal_amount,
             float_mv=record.float_mv,
             turnover_ratio=record.turnover_ratio,
             sector_name=sector_name,
         )
+
+    @staticmethod
+    def _resolve_seal_amount(record: LimitRecord, kpl_record) -> float:
+        """Prefer KPL封单金额, falling back to limit_list_d.limit_amount."""
+        if kpl_record and kpl_record.lu_limit_order > 0:
+            return kpl_record.lu_limit_order
+        return record.limit_amount
 
     @staticmethod
     def _score_seal_time(first_time: str) -> float:
@@ -136,10 +155,18 @@ class FirstBoardAnalyzer:
             return 25.0
 
     @staticmethod
-    def _score_sector(industry: str, top_sectors: set[str]) -> tuple[float, str]:
-        """Score based on whether the stock's sector is in today's top sectors."""
-        if not industry:
-            return 30.0, ""
-        if industry in top_sectors:
+    def _score_sector(industry: str, top_sectors: set[str], kpl_record) -> tuple[float, str]:
+        """Score based on KPL themes first, then fall back to industry names."""
+        if kpl_record and kpl_record.theme:
+            for theme in split_themes(kpl_record.theme):
+                if theme in top_sectors:
+                    return 100.0, theme
+            primary_theme = split_themes(kpl_record.theme)
+            if primary_theme:
+                return 45.0, primary_theme[0]
+
+        if industry and industry in top_sectors:
             return 100.0, industry
-        return 30.0, industry
+        if industry:
+            return 30.0, industry
+        return 30.0, ""

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import pickle
 from pathlib import Path
@@ -34,6 +35,7 @@ class RankingModel:
         self._model: Any = None
         self._scaler: Any = None
         self._model_type = model_type
+        self._metrics: dict[str, float | int | str] | None = None
 
     def train(
         self,
@@ -127,7 +129,7 @@ class RankingModel:
         proba = self._model.predict_proba(x_scaled)[:, 1]
         return proba.tolist()
 
-    def save(self, path: Path) -> None:
+    def save(self, path: Path, metrics: dict[str, float | int | str] | None = None) -> None:
         """Save trained model + HMAC checksum to disk."""
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
@@ -135,6 +137,7 @@ class RankingModel:
             "scaler": self._scaler,
             "model_type": self._model_type,
             "feature_columns": list(ALL_COLUMNS),
+            "metrics": metrics,
         }
         raw = pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -145,6 +148,13 @@ class RankingModel:
         # Write HMAC sidecar for integrity verification
         digest = hmac.new(_MODEL_HMAC_KEY, raw, hashlib.sha256).hexdigest()
         path.with_suffix(".sha256").write_text(digest)
+        self._metrics = metrics
+
+        # Persist metrics separately so signal generation can gate model usage.
+        if metrics is not None:
+            path.with_suffix(".meta.json").write_text(
+                json.dumps(metrics, ensure_ascii=True, indent=2, sort_keys=True),
+            )
 
         logger.info("Model saved to %s (with .sha256 checksum)", path)
 
@@ -185,6 +195,11 @@ class RankingModel:
             self._model = data["model"]
             self._scaler = data["scaler"]
             self._model_type = data.get("model_type", "logistic")
+            self._metrics = data.get("metrics")
+            if self._metrics is None:
+                meta_path = path.with_suffix(".meta.json")
+                if meta_path.exists():
+                    self._metrics = json.loads(meta_path.read_text())
             logger.info("Model loaded from %s (type=%s)", path, self._model_type)
             return True
         except Exception:
@@ -221,3 +236,17 @@ class RankingModel:
         all_imp = self.feature_importance()
         factor_set = set(FACTOR_COLUMNS)
         return {k: v for k, v in all_imp.items() if k in factor_set}
+
+    @property
+    def metrics(self) -> dict[str, float | int | str] | None:
+        return self._metrics
+
+    def is_usable(self, min_auc: float = 0.55) -> bool:
+        """Return whether the loaded model passed the minimum validation bar."""
+        if not self.is_trained or self._metrics is None:
+            return False
+        auc = self._metrics.get("auc_mean")
+        try:
+            return float(auc) >= min_auc
+        except (TypeError, ValueError):
+            return False

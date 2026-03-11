@@ -27,6 +27,7 @@ from hit_astocker.signals.risk_assessor import RiskAssessor
 from hit_astocker.signals.stage1_filter import Stage1Filter
 
 logger = logging.getLogger(__name__)
+_MIN_MODEL_AUC = 0.55
 
 
 class SignalGenerator:
@@ -48,9 +49,14 @@ class SignalGenerator:
         # Try to load ML ranking model
         self._ranking_model = RankingModel()
         model_path = Path(self._settings.db_path).parent / "ranking_model.pkl"
-        self._use_ml = self._ranking_model.load(model_path)
+        loaded = self._ranking_model.load(model_path)
+        self._use_ml = loaded and self._ranking_model.is_usable(_MIN_MODEL_AUC)
         if self._use_ml:
             logger.info("ML ranking model loaded — using two-stage pipeline")
+        elif loaded:
+            logger.warning(
+                "Ranking model loaded but disabled: validation below threshold or metadata missing"
+            )
 
     # -- public API ----------------------------------------------------------
 

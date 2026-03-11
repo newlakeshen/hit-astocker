@@ -8,6 +8,9 @@ build/
 *.egg
 .env
 data/*.db
+data/ranking_model.pkl
+data/ranking_model.sha256
+data/ranking_model.meta.json
 .venv/
 .pytest_cache/
 .coverage
