@@ -150,6 +150,21 @@ class BoardSurvivalAnalyzer:
 
         return round(survived / max(total, 1), 4)
 
+    @staticmethod
+    def cumulative_survival(height: int, model: SurvivalModel) -> float:
+        """累积存活概率 P(1→N) = ∏ P(k+1|k), k=1..N-1.
+
+        连板的可能性随高度递增而递减 (乘性衰减).
+        例: P(1→2)=65%, P(2→3)=40% → P(1→3)=26%.
+        """
+        if not model.stats or height <= 1:
+            return 1.0
+        rate_map = {s.height: s.survival_rate for s in model.stats}
+        cumul = 1.0
+        for k in range(1, height):
+            cumul *= rate_map.get(k, 0.15)
+        return round(cumul, 6)
+
     def score_position(self, height: int, model: SurvivalModel) -> float:
         """Convert survival rate at given height to a 0-100 score for composite scoring.
 

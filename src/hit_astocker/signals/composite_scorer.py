@@ -115,7 +115,7 @@ class CompositeScorer:
                     continue
                 raw = _common_factors(code, shared)
                 raw["survival"] = _survival_score(tier.height, survival_model)
-                raw["height_momentum"] = _score_height_momentum(tier.height)
+                raw["height_momentum"] = _score_height_momentum(tier.height, survival_model)
 
                 weights = _cycle_adjust_weights(_fl_weights(s), cycle, "FOLLOW_BOARD")
                 composite = _weighted_sum(raw, weights)
@@ -275,29 +275,95 @@ def _common_factors(ts_code: str, m: _SharedMaps) -> dict[str, float | None]:
 
 def _survival_score(height: int, model: SurvivalModel | None) -> float:
     """P(height+1 | height) → 0-100 score."""
-    if model and model.stats:
+    if model and model.stats and model.total_samples >= 100:
         return BoardSurvivalAnalyzer(None).score_position(height, model)
-    return 50.0
+    # 样本不足时用经验衰减: 连板越高晋级率越低
+    return _fallback_survival_score(height)
 
 
-def _score_height_momentum(height: int) -> float:
-    """2-3板最优接力位, 4板以上风险递增.
+def _fallback_survival_score(height: int) -> float:
+    """样本不足时的经验生存率评分 (A股打板统计经验值).
 
-    打板实战经验:
-      2板 → 最佳接力 (分歧转一致, 辨识度刚建立)
-      3板 → 趋势确认 (需更强催化)
-      4板 → 进入高位区 (需极强主线地位)
-      5板+ → 只有绝对龙头才敢接 (博弈空间板)
+    连板可能性随高度递减:
+      1板→2板: ~60% 晋级率 → score 75
+      2板→3板: ~35% 晋级率 → score 55
+      3板→4板: ~25% 晋级率 → score 45
+      4板→5板: ~15% 晋级率 → score 35
+      5板+:   ~10% 晋级率 → score 30
     """
+    fallback_map = {1: 75.0, 2: 55.0, 3: 45.0, 4: 35.0, 5: 30.0}
+    if height in fallback_map:
+        return fallback_map[height]
+    return max(20.0, 35.0 - (height - 4) * 5)
+
+
+def _score_height_momentum(height: int, model: SurvivalModel | None = None) -> float:
+    """连板高度动量评分 — 基于实际生存率的衰减模型.
+
+    核心逻辑: 连板可能性随高度递增而递减.
+
+    当有生存率模型时:
+      1. 用实际 P(N+1|N) 单步概率作为基础 (数据驱动)
+      2. 计算累积存活概率 P(1→N) = ∏ P(k+1|k), k=1..N-1
+      3. 综合分 = 40%单步概率 + 40%累积衰减 + 20%位置奖惩
+      - 2板有位置加成(最优接力位), 5板+有额外惩罚(博弈属性)
+
+    无模型时回退到经验阈值.
+    """
+    # 需要足够样本才能用数据驱动 (至少100个样本, 至少10个交易日)
+    if model and model.stats and model.total_samples >= 100:
+        return _data_driven_height_momentum(height, model)
+
+    # Fallback: 静态经验值 (连板可能性随高度递减)
     if height == 2:
-        return 95.0
+        return 90.0
     if height == 3:
-        return 80.0
+        return 72.0
     if height == 4:
-        return 60.0
+        return 50.0
     if height == 5:
-        return 40.0
-    return max(20.0, 100 - height * 15)
+        return 32.0
+    return max(10.0, 80 - height * 15)
+
+
+def _data_driven_height_momentum(height: int, model: SurvivalModel) -> float:
+    """数据驱动的高度动量: 用历史生存率替代硬编码.
+
+    连板的可能性随时间越来越弱:
+      - 单步概率 P(N+1|N): 当前高度的晋级概率 (直接衰减)
+      - 累积概率 P(1→N): 从首板到当前高度的存活概率 (乘性衰减, 下降更快)
+      - 位置调整: 2板是最优接力位(+bonus), 超高板有博弈惩罚
+    """
+    rate_map = {s.height: s.survival_rate for s in model.stats}
+
+    # ── 1. 单步概率 P(N+1|N) → 0-100 分 ──
+    step_rate = rate_map.get(height, 0.15)  # 无数据默认保守值
+    # 映射: rate 0.6+ → 95, 0.5 → 80, 0.3 → 50, 0.15 → 25, 0.05 → 10
+    step_score = min(100.0, max(5.0, step_rate * 160))
+
+    # ── 2. 累积存活概率 P(1→N) = ∏ P(k+1|k), k=1..N-1 ──
+    cumulative = 1.0
+    for k in range(1, height):
+        rate_k = rate_map.get(k, 0.15)
+        cumulative *= rate_k
+    # 累积概率 → 分数 (衰减更快, 强调连板越来越难)
+    # 映射: 0.5 → 85, 0.3 → 65, 0.15 → 45, 0.05 → 20, 0.01 → 5
+    cumul_score = min(100.0, max(5.0, cumulative * 170))
+
+    # ── 3. 位置调整 ──
+    # 2板是最优接力位 (分歧转一致, 辨识度刚建立)
+    # 5板+进入纯博弈区, 额外惩罚
+    position_adj = 0.0
+    if height == 2:
+        position_adj = 10.0   # 最佳接力位加成
+    elif height == 3:
+        position_adj = 3.0    # 趋势确认, 微加
+    elif height >= 5:
+        position_adj = -5.0 * (height - 4)  # 每超1板扣5分
+
+    # ── 综合: 40%单步 + 40%累积 + 20%位置 ──
+    raw = 0.40 * step_score + 0.40 * cumul_score + 0.20 * (50.0 + position_adj)
+    return round(min(100.0, max(5.0, raw)), 1)
 
 
 def _score_leader_position(code: str, theme: ThemeHeat) -> float:

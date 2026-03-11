@@ -50,9 +50,17 @@ class RiskAssessor:
             if candidate.factors.get("seal_quality", 0) < 40:
                 return max_risk(RiskLevel.HIGH, cycle_risk)
         elif sig_type == "FOLLOW_BOARD":
-            if candidate.factors.get("survival", 0) < 30:
+            surv = candidate.factors.get("survival", 0)
+            hm = candidate.factors.get("height_momentum", 0)
+            # 渐进式风险: 连板越高, 风险标准越严
+            # 高度动量越低 = 连板越高 → 生存率门槛越高
+            if surv < 30:
                 return max_risk(RiskLevel.HIGH, cycle_risk)
-            if candidate.factors.get("height_momentum", 0) < 35:
+            if hm < 20:
+                # 极高板(5板+) → 除非survival很高, 否则HIGH
+                if surv < 60:
+                    return max_risk(RiskLevel.HIGH, cycle_risk)
+            elif hm < 35:
                 return max_risk(RiskLevel.HIGH, cycle_risk)
         elif sig_type == "SECTOR_LEADER":
             if candidate.factors.get("theme_heat", 0) < 40:

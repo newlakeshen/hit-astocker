@@ -100,10 +100,43 @@ class Stage1Filter:
             if sq < 25:
                 return f"封板质量极差 (seal_quality={sq:.0f})"
 
-        # 5. 连板生存率极低 (历史统计上几乎必炸)
+        # 5. 连板衰减: 高度越高, 生存率门槛越严
+        #    连板可能性随高度递增而递减, 高位板需要更高的质量才值得参与
         if c.signal_type == "FOLLOW_BOARD":
             surv = c.factors.get("survival", 0)
+            hm = c.factors.get("height_momentum", 0)
+            # 基础门槛: survival < 15 直接过滤
             if surv < 15:
                 return f"晋级率极低 (survival={surv:.0f})"
+            # 高位板递增门槛: 3板要求survival≥25, 4板≥35, 5板+≥45
+            height = _infer_height(hm)
+            if height >= 5 and surv < 45:
+                return f"{height}板晋级率不足 (survival={surv:.0f}<45)"
+            if height >= 4 and surv < 35:
+                return f"{height}板晋级率不足 (survival={surv:.0f}<35)"
+            if height >= 3 and surv < 25:
+                return f"{height}板晋级率不足 (survival={surv:.0f}<25)"
+            # 高度动量过低 = 累积衰减严重, 不值得参与
+            if hm < 15:
+                return f"连板动量衰竭 (height_momentum={hm:.0f})"
 
         return None
+
+
+def _infer_height(height_momentum: float) -> int:
+    """从 height_momentum 分数反推大致连板高度.
+
+    用于 stage1 过滤时无法直接拿到 height 的场景.
+    height_momentum 越低 → 高度越高 (因为连板衰减).
+    """
+    # 基于 _score_height_momentum 的静态回退值:
+    # 2板~90, 3板~72, 4板~50, 5板~32, 6板+~<20
+    if height_momentum >= 80:
+        return 2
+    if height_momentum >= 60:
+        return 3
+    if height_momentum >= 40:
+        return 4
+    if height_momentum >= 25:
+        return 5
+    return 6

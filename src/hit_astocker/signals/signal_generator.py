@@ -235,14 +235,18 @@ class SignalGenerator:
         elif candidate.signal_type == "FOLLOW_BOARD":
             hm = f.get("height_momentum", 0)
             surv = f.get("survival", 0)
-            if hm >= 90:
-                parts.append("2板最佳接力位")
-            elif hm >= 75:
-                parts.append("3板趋势确认")
+            if hm >= 80:
+                parts.append("最佳接力位")
+            elif hm >= 55:
+                parts.append("趋势确认")
+            elif hm >= 30:
+                parts.append("高位接力(衰减中)")
             else:
-                parts.append("高位接力")
+                parts.append("极高位博弈(衰减严重)")
             if surv >= 70:
-                parts.append(f"晋级率{surv:.0f}%")
+                parts.append(f"晋级率{surv:.0f}")
+            elif surv < 40:
+                parts.append(f"晋级率偏低{surv:.0f}")
         elif candidate.signal_type == "SECTOR_LEADER":
             th = f.get("theme_heat", 0)
             lp = f.get("leader_position", 0)
