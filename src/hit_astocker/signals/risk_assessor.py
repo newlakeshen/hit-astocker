@@ -8,6 +8,7 @@ Supports:
 """
 
 from hit_astocker.models.index_data import MarketContext
+from hit_astocker.models.profit_effect import ProfitEffectSnapshot, ProfitRegime
 from hit_astocker.models.sentiment import SentimentScore
 from hit_astocker.models.sentiment_cycle import CyclePhase, SentimentCycle
 from hit_astocker.models.signal import RiskLevel
@@ -20,10 +21,11 @@ class RiskAssessor:
         candidate: ScoredCandidate,
         sentiment: SentimentScore,
         cycle: SentimentCycle | None = None,
+        profit_effect: ProfitEffectSnapshot | None = None,
     ) -> RiskLevel:
         """Assess risk level for a candidate. Returns highest applicable risk."""
         ctx = sentiment.market_context
-        thresholds = _dynamic_thresholds(ctx)
+        thresholds = _dynamic_thresholds(ctx, profit_effect)
 
         # ── Cycle-based gating (hard override) ──
         cycle_risk = _cycle_gate(candidate, cycle)
@@ -160,11 +162,15 @@ def _cycle_gate(candidate: ScoredCandidate, cycle: SentimentCycle | None) -> Ris
 # ── Dynamic thresholds ───────────────────────────────────────────
 
 
-def _dynamic_thresholds(ctx: MarketContext | None) -> dict[str, float]:
-    """Compute risk thresholds adjusted by market regime.
+def _dynamic_thresholds(
+    ctx: MarketContext | None,
+    profit_effect: ProfitEffectSnapshot | None = None,
+) -> dict[str, float]:
+    """Compute risk thresholds adjusted by market regime + profit effect.
 
     In STRONG_BULL: relax thresholds (allow more aggressive entry)
     In BEAR/STRONG_BEAR: tighten thresholds (more conservative)
+    Profit effect regime provides data-driven fine-tuning on top of index regime.
     """
     base = {
         "no_go_sentiment": 40.0,
@@ -202,6 +208,28 @@ def _dynamic_thresholds(ctx: MarketContext | None) -> dict[str, float]:
         base["high_sentiment"] = 60.0
         base["medium_sentiment"] = 75.0
         base["medium_score"] = 70.0
+
+    # ── Profit effect regime overlay (数据驱动微调) ──
+    if profit_effect is not None:
+        pe_regime = profit_effect.regime
+        if pe_regime == ProfitRegime.STRONG:
+            # 赚钱效应强 → 适度放宽 (和指数 regime 叠加)
+            base["high_sentiment"] -= 3.0
+            base["medium_sentiment"] -= 3.0
+            base["medium_score"] -= 3.0
+        elif pe_regime == ProfitRegime.WEAK:
+            # 赚钱效应弱 → 收紧
+            base["high_sentiment"] += 3.0
+            base["medium_sentiment"] += 3.0
+            base["medium_score"] += 3.0
+            base["no_go_broken_rate"] -= 0.03
+        elif pe_regime == ProfitRegime.FROZEN:
+            # 冰封 → 大幅收紧
+            base["no_go_sentiment"] += 5.0
+            base["high_sentiment"] += 5.0
+            base["medium_sentiment"] += 5.0
+            base["medium_score"] += 5.0
+            base["no_go_broken_rate"] -= 0.05
 
     return base
 

@@ -20,14 +20,15 @@ CLI (Typer) -> Commands -> Analyzers -> Repositories -> SQLite (WAL mode)
                        Signal Generator (Two-Stage Pipeline)
                        │
                        ├── Stage 1: Hard Filter (stage1_filter.py)
-                       │   └── ST/BJ排除, 大盘暴跌, 周期门控, 质量硬伤
+                       │   └── ST/BJ排除, 大盘暴跌, 周期门控, 质量硬伤, 赚钱效应分层门控
                        │
                        ├── Stage 2: Cross-Sectional Ranking
                        │   ├── ML Model (ranking_model.py) — logistic/GBDT
                        │   └── Rule-based fallback (composite_scorer.py)
                        │
                        ├── CompositeScorer (10-factor weighted scoring)
-                       ├── RiskAssessor (cycle-aware gating + market regime)
+                       ├── ProfitEffectAnalyzer (赚钱效应分层: 首板/2板/3板/空间板 × 10cm/20cm)
+                       ├── RiskAssessor (cycle-aware gating + market regime + profit regime)
                        ├── FeatureBuilder (19-dim feature vectors)
                        ├── SentimentCycleDetector (6-phase emotion cycle)
                        ├── EventClassifier (3-layer + 政策级别 + 金额级别)
@@ -63,8 +64,9 @@ Concurrency model:
   - `predictor.py` - Buy/sell prediction engine
   - `board_survival.py` - 连板生存率统计 (6-year historical P(N+1|N))
   - `technical_form.py` - 技术形态评分 (MACD/KDJ/RSI/BOLL)
+  - `profit_effect.py` - 赚钱效应分层 (首板/2板/3板/空间板 × 10cm/20cm → STRONG/NORMAL/WEAK/FROZEN)
 - `signals/` - Two-stage signal generation pipeline:
-  - `stage1_filter.py` - Hard filter (ST排除/大盘暴跌/周期门控/质量硬伤)
+  - `stage1_filter.py` - Hard filter (ST排除/大盘暴跌/周期门控/质量硬伤/赚钱效应门控)
   - `feature_builder.py` - 19-dim feature vector extraction (13 factor + 6 context)
   - `ranking_model.py` - ML ranking model (logistic/GBDT, sklearn)
   - `composite_scorer.py` - 10-factor weighted scoring (rule-based fallback)
@@ -75,7 +77,7 @@ Concurrency model:
 - `repositories/` - SQLite data access layer (13 repositories)
   - Includes: `ths_hot_repo.py`, `hsgt_repo.py`, `stk_factor_repo.py`
 - `models/` - Frozen dataclass models
-  - Includes: `ths_hot_data.py`, `hsgt_data.py`, `stk_factor_data.py`, `backtest.py` (TradeResult/BacktestStats + dynamic stops), `daily_context.py` (DataCoverage), `sentiment_cycle.py` (CyclePhase/SentimentCycle), `event_data.py` (PolicyLevel/OrderAmountLevel)
+  - Includes: `ths_hot_data.py`, `hsgt_data.py`, `stk_factor_data.py`, `backtest.py` (TradeResult/BacktestStats + dynamic stops), `daily_context.py` (DataCoverage), `sentiment_cycle.py` (CyclePhase/SentimentCycle), `event_data.py` (PolicyLevel/OrderAmountLevel), `profit_effect.py` (ProfitRegime/TierProfitEffect/ProfitEffectSnapshot)
 - `commands/` - CLI command handlers (14 commands including `train`)
 - `renderers/` - Rich terminal output (tables, dashboard, theme)
 
@@ -181,6 +183,21 @@ Context features (6): cycle_phase (ordinal 0-5),
 - Uses up to 6 years of historical limit_step data
 - Computes P(height N+1 | height N) for each board height
 - Replaces crude fixed lianban_position scoring with statistical probabilities
+
+### Profit Effect Stratification (赚钱效应分层):
+- **维度**: 首板/2板/3板/空间板 × 10cm(主板)/20cm(创科)
+- **指标 (per-tier)**:
+  - 次日开盘溢价: T-1涨停 → T open gap %
+  - 次日收盘收益: T-1涨停 → T close-to-close %
+  - 次日胜率: T close > T-1 close 的占比
+  - 今日炸板率: T 当天该高度的炸板率
+  - 今日非一字率 (可参与度): T 当天该高度可交易的占比
+- **Regime**: STRONG(≥65) / NORMAL(≥45) / WEAK(≥25) / FROZEN(<25)
+  - 40% 总体溢价 + 30% 总体胜率 + 15% 正溢价层占比 + 15% 非炸板率
+- **信号管线集成**:
+  - Stage1: FROZEN → market kill; WEAK + score<65 → 过滤; 首板溢价<-1%且胜率<30% → 过滤
+  - RiskAssessor: regime overlay 微调风险阈值 (STRONG放宽/WEAK收紧/FROZEN大幅收紧)
+  - Dashboard: 分层表 + 10cm/20cm 对比表
 
 ## Performance Constraints
 

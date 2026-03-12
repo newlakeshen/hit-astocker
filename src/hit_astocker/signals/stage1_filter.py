@@ -12,11 +12,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from hit_astocker.models.profit_effect import ProfitRegime
 from hit_astocker.models.sentiment_cycle import CyclePhase
 from hit_astocker.utils.stock_filter import should_exclude
 
 if TYPE_CHECKING:
     from hit_astocker.models.daily_context import DailyAnalysisContext
+    from hit_astocker.models.profit_effect import ProfitEffectSnapshot
     from hit_astocker.signals.composite_scorer import ScoredCandidate
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,11 @@ class Stage1Filter:
         if ctx.sentiment.overall_score < 25:
             return True
 
+        # 赚钱效应冰封 (分层数据驱动: 全面亏钱效应)
+        pe = ctx.profit_effect
+        if pe and pe.regime == ProfitRegime.FROZEN:
+            return True
+
         return False
 
     @staticmethod
@@ -100,6 +107,13 @@ class Stage1Filter:
             if sq < 25:
                 return f"封板质量极差 (seal_quality={sq:.0f})"
 
+        # 4b. 赚钱效应分层门控 (数据驱动, 替代部分经验阈值)
+        pe = ctx.profit_effect
+        if pe:
+            pe_reason = _profit_effect_gate(c, pe)
+            if pe_reason:
+                return pe_reason
+
         # 5. 连板衰减: 高度越高, 生存率门槛越严
         #    连板可能性随高度递增而递减, 高位板需要更高的质量才值得参与
         if c.signal_type == "FOLLOW_BOARD":
@@ -121,6 +135,43 @@ class Stage1Filter:
                 return f"连板动量衰竭 (height_momentum={hm:.0f})"
 
         return None
+
+
+def _profit_effect_gate(
+    c: ScoredCandidate,
+    pe: ProfitEffectSnapshot,
+) -> str | None:
+    """基于赚钱效应分层数据的门控.
+
+    用实际次日溢价/胜率数据替代经验阈值:
+    - 首板层溢价 < -1% 且胜率 < 30% → 首板信号应回避
+    - 弱赚钱效应 + 首板中低分 → 过滤
+    """
+    if c.signal_type == "FIRST_BOARD":
+        tier = pe.tier_for_height(1)
+        if tier and tier.prev_count >= 5:
+            # 首板层数据充足时, 用实际溢价/胜率做硬门控
+            if tier.avg_premium < -1.0 and tier.win_rate < 0.30 and c.score < 70:
+                return (
+                    f"首板赚钱效应极差 "
+                    f"(溢价={tier.avg_premium:+.1f}% 胜率={tier.win_rate:.0%})"
+                )
+
+    if c.signal_type == "FOLLOW_BOARD":
+        height = _infer_height(c.factors.get("height_momentum", 0))
+        tier = pe.tier_for_height(height)
+        if tier and tier.prev_count >= 3:
+            if tier.avg_premium < -2.0 and tier.win_rate < 0.25 and c.score < 75:
+                return (
+                    f"{tier.tier}赚钱效应极差 "
+                    f"(溢价={tier.avg_premium:+.1f}% 胜率={tier.win_rate:.0%})"
+                )
+
+    # 弱 regime 下的附加门控: 非高分标的应审慎
+    if pe.regime == ProfitRegime.WEAK and c.score < 65:
+        return f"赚钱效应偏弱 (regime={pe.regime_score:.0f})"
+
+    return None
 
 
 def _infer_height(height_momentum: float) -> int:

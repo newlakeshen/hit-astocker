@@ -139,7 +139,9 @@ class SignalGenerator:
 
             # Risk assessment still uses rule-based logic for position sizing
             risk = self._risk_assessor.assess(
-                candidate, ctx.sentiment, cycle=ctx.sentiment_cycle,
+                candidate, ctx.sentiment,
+                cycle=ctx.sentiment_cycle,
+                profit_effect=ctx.profit_effect,
             )
             if risk == RiskLevel.NO_GO:
                 continue
@@ -170,7 +172,9 @@ class SignalGenerator:
         signals = []
         for candidate in candidates:
             risk = self._risk_assessor.assess(
-                candidate, ctx.sentiment, cycle=ctx.sentiment_cycle,
+                candidate, ctx.sentiment,
+                cycle=ctx.sentiment_cycle,
+                profit_effect=ctx.profit_effect,
             )
             if risk == RiskLevel.NO_GO:
                 continue

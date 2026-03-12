@@ -129,4 +129,5 @@ def daily(
             signals,
             event_result=ctx.event,
             narrative=narrative,
+            profit_effect=ctx.profit_effect,
         )

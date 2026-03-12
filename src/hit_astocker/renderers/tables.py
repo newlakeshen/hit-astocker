@@ -1,5 +1,7 @@
 """Reusable Rich table builders."""
 
+from __future__ import annotations
+
 from rich.table import Table
 
 from hit_astocker.renderers.theme import format_amount, pct_color, risk_color, score_color
@@ -250,3 +252,122 @@ def dragon_tiger_table(dragon) -> Table:
             r.reason[:16],
         )
     return table
+
+
+# ── Profit effect ──
+
+
+_REGIME_STYLES = {
+    "STRONG": "[bold red]STRONG[/]",
+    "NORMAL": "[bold yellow]NORMAL[/]",
+    "WEAK": "[bold green]WEAK[/]",
+    "FROZEN": "[bold blue]FROZEN[/]",
+}
+
+_REGIME_HINTS = {
+    "STRONG": "多层溢价正/胜率高 → 积极参与",
+    "NORMAL": "部分层有赚钱效应 → 正常参与",
+    "WEAK": "赚钱效应偏弱 → 精选高确定性",
+    "FROZEN": "全面亏钱效应 → 空仓观望",
+}
+
+
+def profit_effect_table(
+    snapshot,
+    *,
+    title_suffix: str = "",
+) -> Table:
+    """Build profit effect stratification table.
+
+    Shows per-tier metrics: premium, return, win_rate, broken_rate, participation.
+    """
+    from hit_astocker.models.profit_effect import ProfitEffectSnapshot
+
+    pe: ProfitEffectSnapshot = snapshot
+    regime_label = _REGIME_STYLES.get(pe.regime.value, pe.regime.value)
+    table = Table(
+        title=f"赚钱效应分层{title_suffix} ({regime_label} {pe.regime_score:.0f})",
+        show_header=True,
+        header_style="bold cyan",
+    )
+    table.add_column("层级", width=6)
+    table.add_column("昨数", justify="right", width=4)
+    table.add_column("次日溢价", justify="right", width=8)
+    table.add_column("次日收益", justify="right", width=8)
+    table.add_column("胜率", justify="right", width=5)
+    table.add_column("今数", justify="right", width=4)
+    table.add_column("炸板率", justify="right", width=6)
+    table.add_column("可参与", justify="right", width=6)
+
+    for t in pe.by_height:
+        table.add_row(
+            f"[bold]{t.tier}[/]",
+            str(t.prev_count),
+            f"[{pct_color(t.avg_premium)}]{t.avg_premium:+.2f}%[/]",
+            f"[{pct_color(t.avg_return)}]{t.avg_return:+.2f}%[/]",
+            f"{t.win_rate:.0%}",
+            str(t.today_count),
+            f"[{_broken_color(t.broken_rate)}]{t.broken_rate:.0%}[/]",
+            f"{t.non_yizi_rate:.0%}",
+        )
+
+    # 总体行
+    table.add_row(
+        "[dim]总体[/]",
+        str(pe.overall_count),
+        f"[{pct_color(pe.overall_premium)}]{pe.overall_premium:+.2f}%[/]",
+        "",
+        f"{pe.overall_win_rate:.0%}",
+        "",
+        "",
+        "",
+    )
+
+    return table
+
+
+def profit_effect_split_table(snapshot) -> Table | None:
+    """Build 10cm/20cm split table (compact).
+
+    Returns None if neither split has data.
+    """
+    from hit_astocker.models.profit_effect import ProfitEffectSnapshot
+
+    pe: ProfitEffectSnapshot = snapshot
+    if not pe.by_height_10cm and not pe.by_height_20cm:
+        return None
+
+    table = Table(
+        title="赚钱效应: 10cm vs 20cm",
+        show_header=True,
+        header_style="bold cyan",
+    )
+    table.add_column("类型", width=6)
+    table.add_column("层级", width=6)
+    table.add_column("昨数", justify="right", width=4)
+    table.add_column("溢价", justify="right", width=7)
+    table.add_column("胜率", justify="right", width=5)
+    table.add_column("炸板", justify="right", width=5)
+
+    for label, tiers in [("10cm", pe.by_height_10cm), ("20cm", pe.by_height_20cm)]:
+        for i, t in enumerate(tiers):
+            type_col = f"[bold]{label}[/]" if i == 0 else ""
+            table.add_row(
+                type_col,
+                t.tier,
+                str(t.prev_count),
+                f"[{pct_color(t.avg_premium)}]{t.avg_premium:+.2f}%[/]",
+                f"{t.win_rate:.0%}",
+                f"[{_broken_color(t.broken_rate)}]{t.broken_rate:.0%}[/]",
+            )
+
+    return table
+
+
+def _broken_color(rate: float) -> str:
+    """Color for broken rate (high = bad)."""
+    if rate >= 0.40:
+        return "bold red"
+    if rate >= 0.25:
+        return "yellow"
+    return "green"

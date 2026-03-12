@@ -14,6 +14,7 @@ from hit_astocker.analyzers.board_survival import SurvivalModel
 from hit_astocker.models.analysis_result import FirstBoardResult, LianbanResult, MoneyFlowResult
 from hit_astocker.models.dragon_tiger import DragonTigerResult
 from hit_astocker.models.event_data import EventAnalysisResult, StockSentimentScore
+from hit_astocker.models.profit_effect import ProfitEffectSnapshot
 from hit_astocker.models.sector import SectorRotationResult
 from hit_astocker.models.sentiment import SentimentScore
 from hit_astocker.models.sentiment_cycle import SentimentCycle
@@ -81,6 +82,7 @@ class DailyAnalysisContext:
     stock_sentiments: tuple[StockSentimentScore, ...]
     coverage: DataCoverage = field(default_factory=DataCoverage)
     sentiment_cycle: SentimentCycle | None = None
+    profit_effect: ProfitEffectSnapshot | None = None
 
 
 @dataclass
@@ -168,7 +170,7 @@ def build_daily_context(
         has_auction=table_has_data_for_date(conn, "stk_auction", trade_date),
     )
 
-    # Phase 1: independent analyzers (+ cycle detection)
+    # Phase 1: independent analyzers (+ cycle detection + profit effect)
     sentiment = SentimentAnalyzer(conn, settings).analyze(trade_date)
 
     from hit_astocker.analyzers.sentiment_cycle import SentimentCycleDetector
@@ -179,6 +181,15 @@ def build_daily_context(
             "SentimentCycleDetector failed for %s", trade_date, exc_info=True,
         )
         sentiment_cycle = None
+
+    from hit_astocker.analyzers.profit_effect import ProfitEffectAnalyzer
+    try:
+        profit_effect = ProfitEffectAnalyzer(conn).analyze(trade_date)
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "ProfitEffectAnalyzer failed for %s", trade_date, exc_info=True,
+        )
+        profit_effect = None
     firstboard = FirstBoardAnalyzer(conn, settings).analyze(trade_date)
     lianban = LianbanAnalyzer(conn).analyze(trade_date)
     sector = SectorRotationAnalyzer(conn).analyze(trade_date)
@@ -226,4 +237,5 @@ def build_daily_context(
         stock_sentiments=tuple(stock_sentiments),
         coverage=coverage,
         sentiment_cycle=sentiment_cycle,
+        profit_effect=profit_effect,
     )

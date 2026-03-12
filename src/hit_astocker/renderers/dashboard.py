@@ -15,6 +15,8 @@ from hit_astocker.renderers.tables import (
     dragon_tiger_table,
     firstboard_table,
     lianban_table,
+    profit_effect_split_table,
+    profit_effect_table,
     sector_table,
     sentiment_table,
     signal_table,
@@ -32,6 +34,7 @@ def render_dashboard(
     signals: list[TradingSignal],
     event_result: EventAnalysisResult | None = None,
     narrative: str = "",
+    profit_effect=None,
 ) -> None:
     """Render the full daily dashboard."""
     # Header with market context
@@ -65,6 +68,18 @@ def render_dashboard(
     # Sentiment overview
     console.print(sentiment_table(sentiment))
     console.print()
+
+    # Profit effect stratification (赚钱效应分层)
+    if profit_effect is not None:
+        from hit_astocker.renderers.tables import _REGIME_HINTS
+        console.print(profit_effect_table(profit_effect))
+        hint = _REGIME_HINTS.get(profit_effect.regime.value, "")
+        if hint:
+            console.print(f"  [dim]{hint}[/]")
+        split = profit_effect_split_table(profit_effect)
+        if split:
+            console.print(split)
+        console.print()
 
     # Event-driven analysis (市场叙事 + 题材热度)
     if event_result:
