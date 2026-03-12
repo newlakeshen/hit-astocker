@@ -72,7 +72,7 @@ Phase 4: 因子优化 → 基于 Phase 1 发现的问题针对性增强
 
 ### 新增 CLI
 ```bash
-hit-astocker backtest-diag -s 20200311 -e 20260310
+hit-astocker backtest diag -s 20200311 -e 20260310
 ```
 输出 Rich 表格，每个维度一张表，标红亏损贡献 >20% 的切片。
 
@@ -302,8 +302,9 @@ Stage1: 个股所在板块 FADING → 过滤; HEATING 持续 ≥2 天 → 加分
 ├── 行业资金流向: moneyflow_ind 净流入排名
 └── 板块纵深: limit_cpt_list 全字段
 
-个股级情绪 (StockSentimentAnalyzer, 9+1因子)
-├── 核心6: volume_ratio/seal_order/bid_activity/theme_heat/event_catalyst/margin_heat
+个股级情绪 (StockSentimentAnalyzer, 8→9因子)
+├── 核心5 (always active): volume_ratio/seal_order/bid_activity/theme_heat/event_catalyst
+├── 新增可选: margin_heat (需 margin_detail 数据)
 └── 可选3: popularity/northbound/technical_form
 
 信号评分 sector 因子 (CompositeScorer, 重构)
