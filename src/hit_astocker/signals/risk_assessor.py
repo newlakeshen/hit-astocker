@@ -171,25 +171,31 @@ def _cycle_gate(candidate: ScoredCandidate, cycle: SentimentCycle | None) -> Ris
         return RiskLevel.NO_GO
 
     if phase == CyclePhase.DIVERGE:
-        # 分歧: 首板成功率骤降, 只允许已确认趋势的连板
+        # 分歧: 首板全面禁止, 连板/龙头高门槛
         if sig_type == "FIRST_BOARD":
-            return RiskLevel.HIGH if score >= 75 else RiskLevel.NO_GO
-        # 连板和龙头正常但提高门槛
-        if score < 65:
-            return RiskLevel.HIGH
-        return RiskLevel.MEDIUM
+            return RiskLevel.NO_GO
+        if sig_type == "FOLLOW_BOARD":
+            return RiskLevel.NO_GO if score < 75 else RiskLevel.HIGH
+        if sig_type == "SECTOR_LEADER":
+            return RiskLevel.NO_GO if score < 80 else RiskLevel.HIGH
+        return RiskLevel.NO_GO if score < 75 else RiskLevel.HIGH
 
     if phase == CyclePhase.REPAIR:
-        # 修复: 提高所有门槛, 轻仓试探
-        if score < 60:
-            return RiskLevel.HIGH
-        return RiskLevel.MEDIUM
+        # 修复初期 (score_delta > 0): 仅允许高分龙头试探
+        if cycle.score_delta > 0:
+            if sig_type == "SECTOR_LEADER" and score >= 80:
+                return RiskLevel.HIGH
+            return RiskLevel.NO_GO
+        # 修复后期: 提高门槛, 轻仓试探
+        return RiskLevel.HIGH if score < 60 else RiskLevel.MEDIUM
 
     if phase == CyclePhase.CLIMAX:
-        # 高潮: 正常参与但警惕
-        if cycle.score_delta < -3:
-            # 高潮末期: score 还高但已开始下滑
-            return RiskLevel.MEDIUM
+        # 高潮: 正常参与但警惕见顶 (二阶导比一阶导更能预警)
+        if cycle.score_accel < -3:
+            # 高潮末期: score 还高但加速度已转负 → 即将进入分歧
+            if score < 65:
+                return RiskLevel.NO_GO
+            return RiskLevel.HIGH
         return RiskLevel.LOW
 
     # FERMENT: 正常参与
