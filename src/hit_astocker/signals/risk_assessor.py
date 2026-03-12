@@ -1,10 +1,18 @@
-"""Risk assessment engine — cycle-aware gating.
+"""Risk assessment engine — quality-driven + cycle-aware gating.
 
-Classifies candidates into risk levels and determines position sizing.
-Supports:
-  - Dynamic threshold adjustment based on market regime (大盘联动)
-  - Emotion-cycle gating: same score + different direction = different risk
-  - Signal-type filtering by cycle phase (e.g., no FIRST_BOARD in DIVERGE)
+Redesigned: risk is primarily driven by individual signal quality (封板质量,
+生存率, 题材热度), NOT market sentiment.  Market conditions can elevate risk
+but never lower it.
+
+Previous design flaw: sentiment-driven risk was inversely correlated with
+actual next-day returns (LOW risk = 31.7% win vs HIGH risk = 48.3% win)
+because high-sentiment days = crowded trades = poor returns.
+
+New approach:
+  1. Kill conditions (NO_GO): unchanged — market crashes, extreme bearish
+  2. Individual quality assessment → base risk level
+  3. Cycle gating → can only raise risk
+  4. Market sentiment → mild modifier (can raise from LOW→MEDIUM, not more)
 """
 
 from hit_astocker.models.index_data import MarketContext
@@ -23,66 +31,45 @@ class RiskAssessor:
         cycle: SentimentCycle | None = None,
         profit_effect: ProfitEffectSnapshot | None = None,
     ) -> RiskLevel:
-        """Assess risk level for a candidate. Returns highest applicable risk."""
+        """Assess risk level for a candidate.
+
+        Priority: kill conditions > cycle gate > quality > market modifier.
+        """
         ctx = sentiment.market_context
         thresholds = _dynamic_thresholds(ctx, profit_effect)
+
+        # ── Kill conditions → NO_GO ──
+        if sentiment.overall_score < thresholds["no_go_sentiment"]:
+            return RiskLevel.NO_GO
+        if sentiment.broken_rate > thresholds["no_go_broken_rate"]:
+            return RiskLevel.NO_GO
+        if ctx and (ctx.sh_pct_chg <= -3.0 or ctx.gem_pct_chg <= -4.0):
+            return RiskLevel.NO_GO
 
         # ── Cycle-based gating (hard override) ──
         cycle_risk = _cycle_gate(candidate, cycle)
         if cycle_risk == RiskLevel.NO_GO:
             return RiskLevel.NO_GO
 
-        # Kill conditions -> NO_GO
-        if sentiment.overall_score < thresholds["no_go_sentiment"]:
-            return RiskLevel.NO_GO
-        if sentiment.broken_rate > thresholds["no_go_broken_rate"]:
-            return RiskLevel.NO_GO
+        # ── Individual quality assessment (core of risk) ──
+        quality_risk = _assess_quality(candidate)
 
-        # Index-based kill: 大盘暴跌
-        if ctx and (ctx.sh_pct_chg <= -3.0 or ctx.gem_pct_chg <= -4.0):
-            return RiskLevel.NO_GO
+        # ── Combine quality + cycle (take more restrictive) ──
+        risk = max_risk(quality_risk, cycle_risk)
 
-        # High risk conditions
-        if sentiment.overall_score < thresholds["high_sentiment"]:
-            return max_risk(RiskLevel.HIGH, cycle_risk)
+        # ── Market sentiment modifier (mild, can only raise) ──
+        # Very weak sentiment pushes LOW → MEDIUM (not to HIGH)
+        if sentiment.overall_score < 45 and risk == RiskLevel.LOW:
+            risk = RiskLevel.MEDIUM
 
-        # Signal-type-specific quality check
-        sig_type = candidate.signal_type
-        if sig_type == "FIRST_BOARD":
-            if candidate.factors.get("seal_quality", 0) < 40:
-                return max_risk(RiskLevel.HIGH, cycle_risk)
-        elif sig_type == "FOLLOW_BOARD":
-            surv = candidate.factors.get("survival", 0)
-            hm = candidate.factors.get("height_momentum", 0)
-            # 渐进式风险: 连板越高, 风险标准越严
-            # 高度动量越低 = 连板越高 → 生存率门槛越高
-            if surv < 30:
-                return max_risk(RiskLevel.HIGH, cycle_risk)
-            if hm < 20:
-                # 极高板(5板+) → 除非survival很高, 否则HIGH
-                if surv < 60:
-                    return max_risk(RiskLevel.HIGH, cycle_risk)
-            elif hm < 35:
-                return max_risk(RiskLevel.HIGH, cycle_risk)
-        elif sig_type == "SECTOR_LEADER":
-            if candidate.factors.get("theme_heat", 0) < 40:
-                return max_risk(RiskLevel.HIGH, cycle_risk)
+        # ── Profit effect overlay ──
+        if profit_effect is not None:
+            if profit_effect.regime == ProfitRegime.FROZEN:
+                risk = max_risk(risk, RiskLevel.HIGH)
+            elif profit_effect.regime == ProfitRegime.WEAK and risk == RiskLevel.LOW:
+                risk = RiskLevel.MEDIUM
 
-        # Index-based high risk: 大盘下跌 + 弱势MA
-        if ctx and ctx.sh_pct_chg < -1.0 and ctx.sh_ma20_ratio < 0.99:
-            return max_risk(RiskLevel.HIGH, cycle_risk)
-
-        # Medium risk
-        if sentiment.overall_score < thresholds["medium_sentiment"]:
-            return max_risk(RiskLevel.MEDIUM, cycle_risk)
-        if candidate.score < thresholds["medium_score"]:
-            return max_risk(RiskLevel.MEDIUM, cycle_risk)
-
-        # Cycle may still elevate risk even when all other checks pass
-        if cycle_risk.value in ("HIGH", "MEDIUM"):
-            return cycle_risk
-
-        return RiskLevel.LOW
+        return risk
 
     @staticmethod
     def position_hint(risk: RiskLevel) -> str:
@@ -93,6 +80,56 @@ class RiskAssessor:
             RiskLevel.EXTREME: "ZERO",
             RiskLevel.NO_GO: "ZERO",
         }.get(risk, "ZERO")
+
+
+# ── Quality-based risk (new core logic) ──────────────────────────
+
+
+def _assess_quality(candidate: ScoredCandidate) -> RiskLevel:
+    """Assess risk based on individual signal quality.
+
+    Uses composite score + type-specific factors.
+    This is the PRIMARY determinant of risk — market conditions are secondary.
+    """
+    score = candidate.score
+    f = candidate.factors
+    sig_type = candidate.signal_type
+
+    # ── Score-based baseline ──
+    if score >= 70:
+        risk = RiskLevel.LOW
+    elif score >= 55:
+        risk = RiskLevel.MEDIUM
+    else:
+        risk = RiskLevel.HIGH
+
+    # ── Signal-type-specific quality adjustments ──
+    if sig_type == "FIRST_BOARD":
+        sq = f.get("seal_quality", 0)
+        if sq < 40:
+            risk = max_risk(risk, RiskLevel.HIGH)
+        elif sq >= 75 and score >= 60:
+            # 封板质量优秀 → 可减一级风险
+            risk = min_risk(risk, RiskLevel.MEDIUM)
+
+    elif sig_type == "FOLLOW_BOARD":
+        surv = f.get("survival", 0)
+        hm = f.get("height_momentum", 0)
+        if surv < 30 or hm < 20:
+            risk = max_risk(risk, RiskLevel.HIGH)
+        elif surv >= 60 and hm >= 50:
+            risk = min_risk(risk, RiskLevel.MEDIUM)
+
+    elif sig_type == "SECTOR_LEADER":
+        th = f.get("theme_heat", 0)
+        lp = f.get("leader_position", 0)
+        if th < 60 or lp < 60:
+            risk = max_risk(risk, RiskLevel.HIGH)
+        elif th >= 80 and lp >= 90:
+            # 龙一 + 高热度 → 减一级
+            risk = min_risk(risk, RiskLevel.MEDIUM)
+
+    return risk
 
 
 # ── Cycle gating ─────────────────────────────────────────────────
@@ -166,18 +203,14 @@ def _dynamic_thresholds(
     ctx: MarketContext | None,
     profit_effect: ProfitEffectSnapshot | None = None,
 ) -> dict[str, float]:
-    """Compute risk thresholds adjusted by market regime + profit effect.
+    """Compute kill-condition thresholds adjusted by market regime.
 
-    In STRONG_BULL: relax thresholds (allow more aggressive entry)
-    In BEAR/STRONG_BEAR: tighten thresholds (more conservative)
-    Profit effect regime provides data-driven fine-tuning on top of index regime.
+    Now only controls NO_GO thresholds (kill conditions).
+    Individual risk levels are driven by _assess_quality(), not thresholds.
     """
     base = {
         "no_go_sentiment": 40.0,
         "no_go_broken_rate": 0.50,
-        "high_sentiment": 50.0,
-        "medium_sentiment": 65.0,
-        "medium_score": 60.0,
     }
 
     if ctx is None:
@@ -185,50 +218,25 @@ def _dynamic_thresholds(
 
     regime = ctx.market_regime
     if regime == "STRONG_BULL":
-        # Relax: lower sentiment threshold, allow more risk
         base["no_go_sentiment"] = 30.0
-        base["high_sentiment"] = 40.0
-        base["medium_sentiment"] = 55.0
-        base["medium_score"] = 50.0
     elif regime == "BULL":
         base["no_go_sentiment"] = 35.0
-        base["high_sentiment"] = 45.0
-        base["medium_sentiment"] = 60.0
-        base["medium_score"] = 55.0
     elif regime == "BEAR":
-        # Tighten: require higher scores
         base["no_go_sentiment"] = 45.0
         base["no_go_broken_rate"] = 0.45
-        base["high_sentiment"] = 55.0
-        base["medium_sentiment"] = 70.0
-        base["medium_score"] = 65.0
     elif regime == "STRONG_BEAR":
         base["no_go_sentiment"] = 50.0
         base["no_go_broken_rate"] = 0.40
-        base["high_sentiment"] = 60.0
-        base["medium_sentiment"] = 75.0
-        base["medium_score"] = 70.0
 
-    # ── Profit effect regime overlay (数据驱动微调) ──
+    # ── Profit effect overlay on kill thresholds ──
     if profit_effect is not None:
         pe_regime = profit_effect.regime
         if pe_regime == ProfitRegime.STRONG:
-            # 赚钱效应强 → 适度放宽 (和指数 regime 叠加)
-            base["high_sentiment"] -= 3.0
-            base["medium_sentiment"] -= 3.0
-            base["medium_score"] -= 3.0
+            base["no_go_sentiment"] -= 3.0
         elif pe_regime == ProfitRegime.WEAK:
-            # 赚钱效应弱 → 收紧
-            base["high_sentiment"] += 3.0
-            base["medium_sentiment"] += 3.0
-            base["medium_score"] += 3.0
             base["no_go_broken_rate"] -= 0.03
         elif pe_regime == ProfitRegime.FROZEN:
-            # 冰封 → 大幅收紧
             base["no_go_sentiment"] += 5.0
-            base["high_sentiment"] += 5.0
-            base["medium_sentiment"] += 5.0
-            base["medium_score"] += 5.0
             base["no_go_broken_rate"] -= 0.05
 
     return base
@@ -249,3 +257,8 @@ _RISK_ORDER = {
 def max_risk(a: RiskLevel, b: RiskLevel) -> RiskLevel:
     """Return the higher (more restrictive) of two risk levels."""
     return a if _RISK_ORDER.get(a, 0) >= _RISK_ORDER.get(b, 0) else b
+
+
+def min_risk(a: RiskLevel, b: RiskLevel) -> RiskLevel:
+    """Return the lower (less restrictive) of two risk levels."""
+    return a if _RISK_ORDER.get(a, 0) <= _RISK_ORDER.get(b, 0) else b

@@ -396,13 +396,13 @@ def _dynamic_min_score(
     """
     threshold = base
 
-    # ── 1. Market regime adjustment ──
+    # ── 1. Market regime adjustment (conservative: avoid over-relaxing) ──
     ctx = sentiment.market_context
     if ctx:
         regime = ctx.market_regime
         regime_adj = {
-            "STRONG_BULL": -8,
-            "BULL": -4,
+            "STRONG_BULL": -5,
+            "BULL": -2,
             "NEUTRAL": 0,
             "BEAR": +5,
             "STRONG_BEAR": +8,

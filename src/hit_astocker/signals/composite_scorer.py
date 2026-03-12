@@ -140,30 +140,33 @@ class CompositeScorer:
                 scored_codes.add(code)
 
         # ── 3. SECTOR_LEADER (空间板龙头) ────────────────────────────
+        # 仅热度≥65的题材、仅龙一 (辨识度最高、资金最集中)
         if event_result:
             for th in event_result.theme_heats:
-                if th.heat_score < 50.0:
+                if th.heat_score < 65.0:
                     continue
-                for code, name in zip(th.leader_codes, th.leader_names, strict=False):
-                    if code in scored_codes:
-                        continue
-                    raw = _common_factors(code, shared)
-                    raw["theme_heat"] = th.heat_score
-                    raw["leader_position"] = _score_leader_position(code, th)
-                    # Leaders of hot themes → full sector score
-                    raw["sector"] = 100.0
-                    # Boost event_catalyst with theme heat
-                    ec = raw.get("event_catalyst") or 50.0
-                    raw["event_catalyst"] = max(ec, th.heat_score)
+                # 只取龙一 (leader_codes[0])
+                if not th.leader_codes:
+                    continue
+                code = th.leader_codes[0]
+                name = th.leader_names[0] if th.leader_names else ""
+                if code in scored_codes:
+                    continue
+                raw = _common_factors(code, shared)
+                raw["theme_heat"] = th.heat_score
+                raw["leader_position"] = 100.0  # 龙一固定满分
+                raw["sector"] = 100.0
+                ec = raw.get("event_catalyst") or 50.0
+                raw["event_catalyst"] = max(ec, th.heat_score)
 
-                    weights = _cycle_adjust_weights(_sl_weights(s), cycle, "SECTOR_LEADER")
-                    composite = _weighted_sum(raw, weights)
-                    clean = {k: v for k, v in raw.items() if v is not None}
-                    candidates.append(ScoredCandidate(
-                        code, name, round(composite, 2), clean, "SECTOR_LEADER",
-                        theme=th.theme_name,
-                    ))
-                    scored_codes.add(code)
+                weights = _cycle_adjust_weights(_sl_weights(s), cycle, "SECTOR_LEADER")
+                composite = _weighted_sum(raw, weights)
+                clean = {k: v for k, v in raw.items() if v is not None}
+                candidates.append(ScoredCandidate(
+                    code, name, round(composite, 2), clean, "SECTOR_LEADER",
+                    theme=th.theme_name,
+                ))
+                scored_codes.add(code)
 
         return sorted(candidates, key=lambda c: c.score, reverse=True)
 

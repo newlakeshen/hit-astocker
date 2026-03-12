@@ -101,11 +101,11 @@ class Stage1Filter:
             if c.score < 75:
                 return f"冰点期 (score={c.score:.0f})"
 
-        # 4. 首板封板质量硬伤 (封板质量极差 = 炸板概率极高)
+        # 4. 首板封板质量硬伤 (封板质量差 = 炸板概率高)
         if c.signal_type == "FIRST_BOARD":
             sq = c.factors.get("seal_quality", 0)
-            if sq < 25:
-                return f"封板质量极差 (seal_quality={sq:.0f})"
+            if sq < 35:
+                return f"封板质量差 (seal_quality={sq:.0f})"
 
         # 4b. 赚钱效应分层门控 (数据驱动, 替代部分经验阈值)
         pe = ctx.profit_effect
@@ -119,8 +119,8 @@ class Stage1Filter:
         if c.signal_type == "FOLLOW_BOARD":
             surv = c.factors.get("survival", 0)
             hm = c.factors.get("height_momentum", 0)
-            # 基础门槛: survival < 15 直接过滤
-            if surv < 15:
+            # 基础门槛: survival < 20 直接过滤
+            if surv < 20:
                 return f"晋级率极低 (survival={surv:.0f})"
             # 高位板递增门槛: 3板要求survival≥25, 4板≥35, 5板+≥45
             height = _infer_height(hm)
