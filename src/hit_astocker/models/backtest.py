@@ -110,6 +110,8 @@ class TradeResult:
     pnl_pct: float        # net PnL after all costs
     cost_pct: float       # round-trip friction cost as % of entry
     t1_open_pct: float    # T+1 open vs T close (%)
+    cycle_phase: str | None = None    # sentiment cycle phase at signal time
+    profit_regime: str | None = None  # profit effect regime at signal time
 
 
 @dataclass(frozen=True)
