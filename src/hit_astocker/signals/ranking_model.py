@@ -2,7 +2,7 @@
 
 Supports two model types:
   - logistic: LogisticRegression (baseline, fully interpretable via coefficients)
-  - gbdt: HistGradientBoostingClassifier (captures non-linear interactions)
+  - gbdt: GradientBoostingClassifier (captures non-linear interactions)
 
 Training data: historical factor vectors + T+1 return labels.
 Inference: predict_proba → probability of profitable trade → ranking score.
@@ -72,12 +72,13 @@ class RankingModel:
 
         # Build model
         if self._model_type == "gbdt":
-            from sklearn.ensemble import HistGradientBoostingClassifier
-            self._model = HistGradientBoostingClassifier(
-                max_iter=200,
+            from sklearn.ensemble import GradientBoostingClassifier
+            self._model = GradientBoostingClassifier(
+                n_estimators=200,
                 max_depth=4,
                 learning_rate=0.05,
                 min_samples_leaf=20,
+                subsample=0.8,
                 random_state=42,
             )
         else:
