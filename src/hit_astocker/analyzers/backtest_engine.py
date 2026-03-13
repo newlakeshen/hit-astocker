@@ -62,6 +62,8 @@ class BacktestEngine:
         trade_date: date,
         entry_date: date,
         exit_date: date,
+        *,
+        market_regime: str | None = None,
     ) -> BacktestDayResult:
         """Simulate trades: signals from *trade_date*, buy on *entry_date*, sell on *exit_date*."""
         if not signals:
@@ -82,6 +84,7 @@ class BacktestEngine:
             result = self._process_signal(
                 sig, config, trade_date, entry_date, exit_date,
                 t_bars, t1_bars, t2_bars, t1_limits, t2_limits,
+                market_regime=market_regime,
             )
             if isinstance(result, TradeResult):
                 trades.append(result)
@@ -108,6 +111,8 @@ class BacktestEngine:
         t2_bars: dict[str, DailyBar],
         t1_limits: dict[str, LimitRecord],
         t2_limits: dict[str, LimitRecord],
+        *,
+        market_regime: str | None = None,
     ) -> TradeResult | SkippedSignal:
         code = sig.ts_code
         t1_bar = t1_bars.get(code)
@@ -165,7 +170,9 @@ class BacktestEngine:
             return self._skip(sig, SkipReason.NO_T2_BAR)
 
         t2_limit = t2_limits.get(code)
-        eff_stop, eff_target = config.effective_stops(sig.signal_type.value)
+        eff_stop, eff_target = config.effective_stops_with_regime(
+            sig.signal_type.value, market_regime,
+        )
         raw_exit, exit_reason = self._determine_exit(
             eff_entry, t2_bar, t2_limit, config, eff_stop, eff_target,
         )

@@ -90,6 +90,39 @@ class BacktestConfig:
 
         return self.stop_loss_pct, self.take_profit_pct
 
+    def effective_stops_with_regime(
+        self, signal_type: str, market_regime: str | None = None,
+    ) -> tuple[float, float]:
+        """Type-specific stops adjusted by market regime."""
+        base_stop, base_target = self.effective_stops(signal_type)
+
+        # dynamic_stops=False -> no regime adjustment either
+        if not self.dynamic_stops:
+            return base_stop, base_target
+
+        if market_regime is None or market_regime in ("BULL", "NEUTRAL"):
+            return base_stop, base_target
+
+        # Regime adjustments (positive = tighter stop / wider take)
+        regime_adj = {
+            "STRONG_BULL": (1.0, 2.0),   # tighter stop, wider take
+            "BEAR": (1.5, -1.0),          # tighter stop, tighter take
+            "STRONG_BEAR": (2.0, -2.0),   # most aggressive
+        }
+        stop_adj, take_adj = regime_adj.get(market_regime, (0.0, 0.0))
+
+        # Tighter stop = less negative (add positive adjustment)
+        adj_stop = base_stop + stop_adj
+        # Ensure stop doesn't become positive
+        adj_stop = min(adj_stop, -1.0)
+
+        # Take profit adjustment
+        adj_target = base_target + take_adj
+        # Ensure take doesn't become negative
+        adj_target = max(adj_target, 1.0)
+
+        return adj_stop, adj_target
+
 
 @dataclass(frozen=True)
 class TradeResult:

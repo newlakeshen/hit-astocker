@@ -215,7 +215,13 @@ def backtest(
                 continue
 
             total_signals += len(signals)
-            day_result = engine.simulate_day(signals, config, d, t1, t2)
+            market_regime = None
+            mc = ctx.sentiment.market_context if ctx.sentiment else None
+            if mc:
+                market_regime = mc.market_regime
+            day_result = engine.simulate_day(
+                signals, config, d, t1, t2, market_regime=market_regime,
+            )
             all_trades.extend(day_result.trades)
             all_skipped.extend(day_result.skipped)
 

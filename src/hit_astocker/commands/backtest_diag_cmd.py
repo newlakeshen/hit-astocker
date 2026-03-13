@@ -161,8 +161,14 @@ def diag(
                 if not signals:
                     continue
 
-                # Run simulation (simulate_day unchanged, no new params)
-                day_result = engine.simulate_day(signals, config, d, t1, t2)
+                # Run simulation with market-regime adaptive stops
+                market_regime = None
+                mc = ctx.sentiment.market_context if ctx.sentiment else None
+                if mc:
+                    market_regime = mc.market_regime
+                day_result = engine.simulate_day(
+                    signals, config, d, t1, t2, market_regime=market_regime,
+                )
 
                 # Post-hoc enrichment: fill cycle_phase/profit_regime via dataclasses.replace
                 cycle_phase: str | None = None
