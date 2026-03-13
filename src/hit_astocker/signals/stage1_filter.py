@@ -78,6 +78,11 @@ class Stage1Filter:
         if pe and pe.regime == ProfitRegime.FROZEN:
             return True
 
+        # 系统性弱市: STRONG_BEAR + WEAK赚钱效应 + 情绪低迷 → 全面空仓
+        if mc and mc.market_regime == "STRONG_BEAR" and pe:
+            if pe.regime == ProfitRegime.WEAK and ctx.sentiment.overall_score < 40:
+                return True
+
         return False
 
     @staticmethod
@@ -133,6 +138,16 @@ class Stage1Filter:
             # 高度动量过低 = 累积衰减严重, 不值得参与
             if hm < 15:
                 return f"连板动量衰竭 (height_momentum={hm:.0f})"
+
+            # 5b. 赚钱效应联动: 弱市下收紧连板门槛
+            pe = ctx.profit_effect
+            if pe and pe.regime in (ProfitRegime.WEAK, ProfitRegime.FROZEN):
+                min_surv = 45 if height <= 3 else 60
+                if surv < min_surv:
+                    return (
+                        f"弱赚钱效应连板门槛 "
+                        f"(survival={surv:.0f}<{min_surv}, regime={pe.regime.value})"
+                    )
 
         return None
 
