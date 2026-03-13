@@ -218,9 +218,12 @@ class SignalGenerator:
         if not signals:
             return signals
 
+        profit_regime = ctx.profit_effect.regime.value if ctx.profit_effect else None
+
         # ── 1. Dynamic score threshold ──
         min_score = _dynamic_min_score(
             s.signal_min_score, ctx.sentiment, ctx.sentiment_cycle,
+            profit_regime=profit_regime,
         )
         signals = [sig for sig in signals if sig.composite_score >= min_score]
         if not signals:
@@ -264,12 +267,18 @@ class SignalGenerator:
                 )
         signals = type_filtered
 
-        # ── 4. TopK daily cap ──
-        if len(signals) > s.signal_top_k:
+        # ── 4. TopK daily cap (dynamic) ──
+        cycle_phase = ctx.sentiment_cycle.phase.value if ctx.sentiment_cycle else None
+        score_delta = ctx.sentiment_cycle.score_delta if ctx.sentiment_cycle else 0.0
+        effective_top_k = min(
+            _dynamic_top_k(profit_regime, cycle_phase, score_delta),
+            s.signal_top_k,
+        )
+        if len(signals) > effective_top_k:
             logger.info(
-                "TopK 截断: %d → %d", len(signals), s.signal_top_k,
+                "TopK 截断: %d → %d", len(signals), effective_top_k,
             )
-            signals = signals[: s.signal_top_k]
+            signals = signals[:effective_top_k]
 
         return signals
 
@@ -387,6 +396,7 @@ def _dynamic_min_score(
     base: float,
     sentiment: SentimentScore,
     cycle: SentimentCycle | None,
+    profit_regime: str | None = None,
 ) -> float:
     """Compute adaptive score threshold from market regime + sentiment cycle.
 
@@ -423,4 +433,38 @@ def _dynamic_min_score(
         elif phase == CyclePhase.FERMENT:
             threshold -= 2
 
+    # ── 3. Profit regime adjustment ──
+    if profit_regime == "WEAK":
+        threshold += 5
+
     return max(30.0, min(75.0, threshold))  # clamp to [30, 75]
+
+
+def _dynamic_top_k(
+    profit_regime: str | None,
+    cycle_phase: str | None,
+    score_delta: float,
+) -> int:
+    """Compute dynamic daily signal cap based on market state."""
+    if profit_regime == "FROZEN":
+        return 0
+
+    base = 2  # settings.signal_top_k default
+
+    if profit_regime == "WEAK":
+        return 1
+
+    if profit_regime == "NORMAL":
+        if cycle_phase == "FERMENT":
+            return base
+        return 1
+
+    if profit_regime == "STRONG":
+        if cycle_phase in ("FERMENT", "CLIMAX") and score_delta >= 0:
+            return base
+        if cycle_phase == "CLIMAX" and score_delta < 0:
+            return 1
+        return base
+
+    # Unknown/None regime → conservative
+    return 1
