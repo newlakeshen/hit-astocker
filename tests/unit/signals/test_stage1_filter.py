@@ -149,3 +149,63 @@ def test_follow_board_normal_regime_no_tightening():
     ctx = _make_ctx(profit_regime=ProfitRegime.NORMAL)
     reason = Stage1Filter._should_filter(c, ctx)
     assert reason is None
+
+
+# ── STRONG_BEAR + WEAK combined market kill ──
+
+
+def _make_kill_ctx(
+    market_regime: str | None = None,
+    sh_pct_chg: float = 0.5,
+    gem_pct_chg: float = 0.3,
+    overall_score: float = 55.0,
+    profit_regime: ProfitRegime | None = None,
+):
+    """Build a minimal DailyAnalysisContext mock for _market_kill tests."""
+    ctx = MagicMock()
+    if market_regime is not None:
+        mc = MagicMock()
+        mc.sh_pct_chg = sh_pct_chg
+        mc.gem_pct_chg = gem_pct_chg
+        mc.market_regime = market_regime
+        ctx.sentiment.market_context = mc
+    else:
+        ctx.sentiment.market_context = None
+    ctx.sentiment.overall_score = overall_score
+    if profit_regime is not None:
+        pe = MagicMock()
+        pe.regime = profit_regime
+        ctx.profit_effect = pe
+    else:
+        ctx.profit_effect = None
+    return ctx
+
+
+def test_strong_bear_weak_low_score_kills():
+    """STRONG_BEAR + WEAK + score=35 → market_kill returns True."""
+    ctx = _make_kill_ctx(
+        market_regime="STRONG_BEAR",
+        overall_score=35.0,
+        profit_regime=ProfitRegime.WEAK,
+    )
+    assert Stage1Filter._market_kill(ctx) is True
+
+
+def test_strong_bear_weak_score_above_40_no_kill():
+    """STRONG_BEAR + WEAK + score=45 → market_kill returns False (score above 40)."""
+    ctx = _make_kill_ctx(
+        market_regime="STRONG_BEAR",
+        overall_score=45.0,
+        profit_regime=ProfitRegime.WEAK,
+    )
+    assert Stage1Filter._market_kill(ctx) is False
+
+
+def test_bear_weak_low_score_no_kill():
+    """BEAR (not STRONG_BEAR) + WEAK + score=35 → market_kill returns False."""
+    ctx = _make_kill_ctx(
+        market_regime="BEAR",
+        overall_score=35.0,
+        profit_regime=ProfitRegime.WEAK,
+    )
+    assert Stage1Filter._market_kill(ctx) is False

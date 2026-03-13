@@ -428,8 +428,8 @@ def _dynamic_min_score(
             threshold += 5
         elif phase == CyclePhase.REPAIR:
             threshold += 3
-        elif phase == CyclePhase.CLIMAX and cycle.score_delta < -3:
-            threshold += 3  # 高潮末期
+        elif phase == CyclePhase.CLIMAX and cycle.score_delta < -1:
+            threshold += 8  # 高潮末期: 大幅收紧, 接近 DIVERGE 水平
         elif phase == CyclePhase.FERMENT:
             threshold -= 2
 
