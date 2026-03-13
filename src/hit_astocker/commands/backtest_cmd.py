@@ -225,6 +225,9 @@ def backtest(
             all_trades.extend(day_result.trades)
             all_skipped.extend(day_result.skipped)
 
+            # Evict stale bar/limit cache entries (keep recent 5 days)
+            engine.evict_stale_cache(keep_after=d)
+
         if total_signals == 0:
             console.print("[yellow]回测区间内无信号生成[/]")
             raise typer.Exit(0)
@@ -359,15 +362,23 @@ def _collect_range_coverage(
     executable_dates = _resolve_executable_signal_dates(
         trading_dates, _load_daily_bar_dates(conn),
     )
+    if not executable_dates:
+        return BacktestRangeCoverage(len(trading_dates), 0, ())
+
+    exec_set = {to_tushare_date(d) for d in executable_dates}
 
     buckets = []
     for table_name, label, date_column in _OPTIONAL_COVERAGE_SOURCES:
-        covered_days = _count_covered_dates(conn, table_name, executable_dates, date_column)
-        buckets.append(CoverageBucket(
-            label=label,
-            covered_days=covered_days,
-            total_days=len(executable_dates),
-        ))
+        # Pre-load all distinct dates (one fast query per table)
+        try:
+            rows = conn.execute(
+                f"SELECT DISTINCT [{date_column}] FROM [{table_name}]",
+            ).fetchall()
+            db_dates = {r[0] for r in rows}
+            covered = sum(1 for d in exec_set if d in db_dates)
+        except sqlite3.OperationalError:
+            covered = 0
+        buckets.append(CoverageBucket(label, covered, len(executable_dates)))
 
     return BacktestRangeCoverage(
         requested_days=len(trading_dates),

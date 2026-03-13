@@ -188,6 +188,9 @@ def diag(
                 ]
                 all_trades.extend(enriched)
 
+                # Evict stale bar/limit cache entries
+                engine.evict_stale_cache(keep_after=d)
+
         if not all_trades:
             console.print("[yellow]回测区间内无交易[/]")
             return

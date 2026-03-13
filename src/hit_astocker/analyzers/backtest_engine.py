@@ -52,6 +52,29 @@ class BacktestEngine:
     def __init__(self, conn: sqlite3.Connection):
         self._bar_repo = DailyBarRepository(conn)
         self._limit_repo = LimitListRepository(conn)
+        self._bar_cache: dict[date, dict[str, DailyBar]] = {}
+        self._limit_cache: dict[date, dict[str, LimitRecord]] = {}
+
+    def _get_bars(self, d: date) -> dict[str, DailyBar]:
+        if d not in self._bar_cache:
+            self._bar_cache[d] = {
+                b.ts_code: b for b in self._bar_repo.find_records_by_date(d)
+            }
+        return self._bar_cache[d]
+
+    def _get_limits(self, d: date) -> dict[str, LimitRecord]:
+        if d not in self._limit_cache:
+            self._limit_cache[d] = {
+                r.ts_code: r for r in self._limit_repo.find_records_by_date(d)
+            }
+        return self._limit_cache[d]
+
+    def evict_stale_cache(self, keep_after: date) -> None:
+        """Remove cached entries older than *keep_after* to bound memory."""
+        for cache in (self._bar_cache, self._limit_cache):
+            stale = [d for d in cache if d < keep_after]
+            for d in stale:
+                del cache[d]
 
     # ── public API ───────────────────────────────────────────────
 
@@ -69,13 +92,13 @@ class BacktestEngine:
         if not signals:
             return BacktestDayResult(trade_date=trade_date, trades=(), skipped=())
 
-        # Batch-load all bars and limit records
-        t_bars = {b.ts_code: b for b in self._bar_repo.find_records_by_date(trade_date)}
-        t1_bars = {b.ts_code: b for b in self._bar_repo.find_records_by_date(entry_date)}
-        t2_bars = {b.ts_code: b for b in self._bar_repo.find_records_by_date(exit_date)}
+        # Batch-load bars and limit records (with caching across days)
+        t_bars = self._get_bars(trade_date)
+        t1_bars = self._get_bars(entry_date)
+        t2_bars = self._get_bars(exit_date)
 
-        t1_limits = {r.ts_code: r for r in self._limit_repo.find_records_by_date(entry_date)}
-        t2_limits = {r.ts_code: r for r in self._limit_repo.find_records_by_date(exit_date)}
+        t1_limits = self._get_limits(entry_date)
+        t2_limits = self._get_limits(exit_date)
 
         trades: list[TradeResult] = []
         skipped: list[SkippedSignal] = []

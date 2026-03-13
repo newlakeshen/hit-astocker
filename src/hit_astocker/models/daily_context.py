@@ -90,6 +90,7 @@ class DailyContextCaches:
     """Reusable caches for multi-day context building."""
 
     survival_models: dict[tuple[date, int], SurvivalModel] = field(default_factory=dict)
+    coverage_cache: dict[date, DataCoverage] = field(default_factory=dict)
 
 
 def table_has_data(conn: sqlite3.Connection, table: str) -> bool:
@@ -161,14 +162,19 @@ def build_daily_context(
     from hit_astocker.analyzers.stock_sentiment import StockSentimentAnalyzer
     from hit_astocker.repositories.hsgt_repo import HsgtTop10Repository
 
-    # ── Data coverage detection (one-time O(1) checks) ──
-    coverage = DataCoverage(
-        has_ths_hot=table_has_data_for_date(conn, "ths_hot", trade_date),
-        has_hsgt=table_has_data_for_date(conn, "hsgt_top10", trade_date),
-        has_stk_factor=table_has_data_for_date(conn, "stk_factor_pro", trade_date),
-        has_hm=table_has_data_for_date(conn, "hm_detail", trade_date),
-        has_auction=table_has_data_for_date(conn, "stk_auction", trade_date),
-    )
+    # ── Data coverage detection (cached across days in backtest) ──
+    if caches and trade_date in caches.coverage_cache:
+        coverage = caches.coverage_cache[trade_date]
+    else:
+        coverage = DataCoverage(
+            has_ths_hot=table_has_data_for_date(conn, "ths_hot", trade_date),
+            has_hsgt=table_has_data_for_date(conn, "hsgt_top10", trade_date),
+            has_stk_factor=table_has_data_for_date(conn, "stk_factor_pro", trade_date),
+            has_hm=table_has_data_for_date(conn, "hm_detail", trade_date),
+            has_auction=table_has_data_for_date(conn, "stk_auction", trade_date),
+        )
+        if caches is not None:
+            caches.coverage_cache[trade_date] = coverage
 
     # Phase 1: independent analyzers (+ cycle detection + profit effect)
     sentiment = SentimentAnalyzer(conn, settings).analyze(trade_date)
