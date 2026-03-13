@@ -104,7 +104,7 @@ class Stage1Filter:
         # 4. 首板封板质量硬伤 (封板质量差 = 炸板概率高)
         if c.signal_type == "FIRST_BOARD":
             sq = c.factors.get("seal_quality", 0)
-            if sq < 35:
+            if sq < 45:
                 return f"封板质量差 (seal_quality={sq:.0f})"
 
         # 4b. 赚钱效应分层门控 (数据驱动, 替代部分经验阈值)
@@ -119,17 +119,17 @@ class Stage1Filter:
         if c.signal_type == "FOLLOW_BOARD":
             surv = c.factors.get("survival", 0)
             hm = c.factors.get("height_momentum", 0)
-            # 基础门槛: survival < 20 直接过滤
-            if surv < 20:
+            # 基础门槛: survival < 30 直接过滤
+            if surv < 30:
                 return f"晋级率极低 (survival={surv:.0f})"
-            # 高位板递增门槛: 3板要求survival≥25, 4板≥35, 5板+≥45
+            # 高位板递增门槛: 3板要求survival≥35, 4板≥45, 5板+≥55
             height = _infer_height(hm)
-            if height >= 5 and surv < 45:
+            if height >= 5 and surv < 55:
+                return f"{height}板晋级率不足 (survival={surv:.0f}<55)"
+            if height >= 4 and surv < 45:
                 return f"{height}板晋级率不足 (survival={surv:.0f}<45)"
-            if height >= 4 and surv < 35:
+            if height >= 3 and surv < 35:
                 return f"{height}板晋级率不足 (survival={surv:.0f}<35)"
-            if height >= 3 and surv < 25:
-                return f"{height}板晋级率不足 (survival={surv:.0f}<25)"
             # 高度动量过低 = 累积衰减严重, 不值得参与
             if hm < 15:
                 return f"连板动量衰竭 (height_momentum={hm:.0f})"
@@ -151,7 +151,7 @@ def _profit_effect_gate(
         tier = pe.tier_for_height(1)
         if tier and tier.prev_count >= 5:
             # 首板层数据充足时, 用实际溢价/胜率做硬门控
-            if tier.avg_premium < -1.0 and tier.win_rate < 0.30 and c.score < 70:
+            if tier.avg_premium < -2.0 and tier.win_rate < 0.35:
                 return (
                     f"首板赚钱效应极差 "
                     f"(溢价={tier.avg_premium:+.1f}% 胜率={tier.win_rate:.0%})"
@@ -165,6 +165,16 @@ def _profit_effect_gate(
                 return (
                     f"{tier.tier}赚钱效应极差 "
                     f"(溢价={tier.avg_premium:+.1f}% 胜率={tier.win_rate:.0%})"
+                )
+
+    if c.signal_type == "SECTOR_LEADER":
+        height = _infer_height(c.factors.get("height_momentum", 0))
+        tier = pe.tier_for_height(height)
+        if tier and tier.prev_count >= 3:
+            if hasattr(tier, 'broken_rate') and tier.broken_rate > 0.60:
+                return (
+                    f"空间板炸板率过高 "
+                    f"(broken_rate={tier.broken_rate:.0%})"
                 )
 
     # 弱 regime 下的附加门控: 非高分标的应审慎
