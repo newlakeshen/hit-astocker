@@ -190,10 +190,14 @@ def _cycle_gate(candidate: ScoredCandidate, cycle: SentimentCycle | None) -> Ris
         return RiskLevel.HIGH if score < 60 else RiskLevel.MEDIUM
 
     if phase == CyclePhase.CLIMAX:
-        # 高潮: 正常参与但警惕见顶 (二阶导比一阶导更能预警)
-        if cycle.score_accel < -3:
-            # 高潮末期: score 还高但加速度已转负 → 即将进入分歧
-            if score < 65:
+        # 高潮末期检测: 一阶导+二阶导协同判断
+        # 条件: delta < -1 (情绪已开始下滑) OR accel < -3 (加速恶化)
+        is_late_climax = cycle.score_delta < -1 or cycle.score_accel < -3
+        if is_late_climax:
+            # 高潮末期: 仅 SECTOR_LEADER 75+ 可参与
+            if sig_type == "SECTOR_LEADER" and score >= 75:
+                return RiskLevel.HIGH
+            if score < 70:
                 return RiskLevel.NO_GO
             return RiskLevel.HIGH
         return RiskLevel.LOW
