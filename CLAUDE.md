@@ -207,6 +207,12 @@ Context features (6): cycle_phase (ordinal 0-5),
 - **Parallel analyzers**: Independent analyzers run in ThreadPoolExecutor. Never nest ThreadPoolExecutor inside another pool on the same SQLite connection
 - **Sync parallelism**: API HTTP fetches are parallelized (4 workers); DB writes are sequential (SQLite single-writer)
 - **ROW_NUMBER batch queries**: Always enumerate columns explicitly in the outer SELECT to exclude the `rn` column
+- **Repo bulk preloading** (training/backtest): `LimitListRepository`, `LimitStepRepository`, `KplRepository` support `preload_range(start, end)` — one bulk SQL loads all records into memory, subsequent per-date queries use dict lookups instead of SQL. All derived methods (count_by_type, find_first_board_stocks, etc.) check `_records_cache` before hitting DB
+- **Shared repo instances**: `DailyContextCaches` holds shared pre-loaded repos (`limit_repo`, `step_repo`, `kpl_repo`, `hm_repo`). Analyzers accept optional repo params (e.g., `limit_repo=None`) — when provided, skip creating new repo instances. This ensures preloaded data is shared across all analyzers in the same `build_daily_context` call
+- **HmRepository profiles cache**: `compute_trader_profiles()` SQL limits daily_bar scan to `relevant_codes` CTE (not full table). Profiles are cached and reused within 30-day windows (98% data overlap between adjacent days)
+- **SentimentCycleDetector light_metrics cache**: `light_metrics_cache: dict[date, _DayMetrics]` in `DailyContextCaches` eliminates 75% redundant lookback queries across consecutive days
+- **EventClassifier concept_members cache**: `concept_members_cache: dict[str, list[str]]` in `DailyContextCaches` eliminates N+1 concept membership queries (structural data, rarely changes)
+- **DataCoverage global_coverage**: `DailyContextCaches.global_coverage` checks table-level data availability once and reuses for all days (tables don't change mid-training/backtest)
 
 ## Conventions
 
@@ -220,3 +226,4 @@ Context features (6): cycle_phase (ordinal 0-5),
 - scikit-learn as optional dependency (`pip install 'hit-astocker[ml]'`)
 - 所有交流使用中文
 - 写完代码后主动提交并推送到 GitHub
+- **每次提交前必须更新 CLAUDE.md**: 结合当前 session 的改动，准确更新 CLAUDE.md 中的架构、模块、性能约束等相关章节，确保文档与代码保持同步
