@@ -40,10 +40,10 @@ CLI (Typer) -> Commands -> Analyzers -> Repositories -> SQLite (WAL mode)
                     Rich Terminal Output
 
 Concurrency model:
-- SQLite in WAL mode + check_same_thread=False for concurrent reads
+- SQLite in WAL mode; single connection per command (no check_same_thread)
 - SignalGenerator: Stage1 filter → Stage2 rank (ML or rules) → risk assess
 - SyncOrchestrator: parallel HTTP fetches (4 workers) → sequential DB writes
-- daily_cmd: 6 analyzers parallel, then SignalGenerator sequential (avoid nested pools)
+- daily_cmd / signal_cmd: sequential analyzers (single SQLite connection, not thread-safe)
 ```
 
 ## Key Modules
@@ -61,24 +61,34 @@ Concurrency model:
   - `market_context.py` - Market index regime analysis (MA5/MA20 + regime scoring)
   - `signal_validator.py` - T+1 signal validation (legacy, simple close-vs-OHLC)
   - `backtest_engine.py` - Realistic board-hitting backtest (3 execution modes + dynamic stop/target)
+  - `backtest_diagnosis.py` - 6-dimensional backtest diagnosis (切片分析亏损来源)
   - `predictor.py` - Buy/sell prediction engine
   - `board_survival.py` - 连板生存率统计 (6-year historical P(N+1|N))
   - `technical_form.py` - 技术形态评分 (MACD/KDJ/RSI/BOLL)
   - `profit_effect.py` - 赚钱效应分层 (首板/2板/3板/空间板 × 10cm/20cm → STRONG/NORMAL/WEAK/FROZEN)
 - `signals/` - Two-stage signal generation pipeline:
   - `stage1_filter.py` - Hard filter (ST排除/大盘暴跌/周期门控/质量硬伤/赚钱效应门控)
+  - `filters.py` - Candidate pre-filter (ST/BJ/市值排除)
   - `feature_builder.py` - 19-dim feature vector extraction (13 factor + 6 context)
   - `ranking_model.py` - ML ranking model (logistic/GBDT, sklearn)
   - `composite_scorer.py` - 10-factor weighted scoring (rule-based fallback)
   - `risk_assessor.py` - Cycle-aware risk gating + market regime thresholds
   - `signal_generator.py` - Two-stage pipeline orchestrator
-- `fetchers/` - Tushare data sync (sync_orchestrator + 14 fetchers)
-  - Includes: `ths_hot_fetcher.py` (同花顺热股), `hsgt_fetcher.py` (北向资金), `stk_factor_fetcher.py` (技术因子)
-- `repositories/` - SQLite data access layer (13 repositories)
-  - Includes: `ths_hot_repo.py`, `hsgt_repo.py`, `stk_factor_repo.py`
-- `models/` - Frozen dataclass models
-  - Includes: `ths_hot_data.py`, `hsgt_data.py`, `stk_factor_data.py`, `backtest.py` (TradeResult/BacktestStats + dynamic stops), `daily_context.py` (DataCoverage), `sentiment_cycle.py` (CyclePhase/SentimentCycle), `event_data.py` (PolicyLevel/OrderAmountLevel), `profit_effect.py` (ProfitRegime/TierProfitEffect/ProfitEffectSnapshot)
-- `commands/` - CLI command handlers (14 commands including `train`)
+- `fetchers/` - Tushare data sync (sync_orchestrator + 21 fetchers)
+  - Includes: `ths_hot_fetcher.py`, `hsgt_fetcher.py`, `stk_factor_fetcher.py`, `trade_cal_fetcher.py`, `hm_fetcher.py`, `ann_fetcher.py`, `concept_fetcher.py`, `ths_member_fetcher.py`
+- `repositories/` - SQLite data access layer (17 repositories + base)
+  - Includes: `ths_hot_repo.py`, `hsgt_repo.py`, `stk_factor_repo.py`, `hm_repo.py`, `ann_repo.py`, `concept_repo.py`, `auction_repo.py`
+- `models/` - Frozen dataclass models (27 model files)
+  - Includes: `backtest.py` (TradeResult/BacktestStats), `daily_context.py` (DataCoverage/DailyContextCaches), `sentiment_cycle.py` (CyclePhase/SentimentCycle), `event_data.py` (PolicyLevel/OrderAmountLevel), `profit_effect.py` (ProfitRegime/ProfitEffectSnapshot)
+- `commands/` - CLI command handlers (15 commands including `train`, `backtest-diag`)
+- `database/` - SQLite connection management, schema migrations
+- `utils/` - Shared utilities:
+  - `trade_calendar.py` - TradeCalendar singleton (bisect O(log n) 交易日查找)
+  - `date_utils.py` - Date helper functions (委托给 TradeCalendar)
+  - `stock_filter.py` - ST/BJ/风险警示 stock exclusion
+- `llm/` - LLM integration (optional, `pip install 'hit-astocker[llm]'`):
+  - `client.py` / `cache.py` - OpenAI API client with response caching
+  - `event_enhancer.py` / `narrative_gen.py` - AI-powered event narrative generation
 - `renderers/` - Rich terminal output (tables, dashboard, theme)
 
 ## CLI Commands
@@ -96,7 +106,18 @@ hit-astocker train -s START -e END [-m logistic|gbdt] [--min-samples 200]
 hit-astocker backtest -s START -e END [-m MODE] [--stop-loss -7] [--take-profit 5] [--no-dynamic-stops] [--detail]
   # MODE: AUCTION (竞价买) / WEAK_TO_STRONG (弱转强) / RE_SEAL (回封买)
   # T信号 → T+1买入 → T+2卖出, 动态止损止盈(首板紧/龙头宽)
+hit-astocker backtest-diag -s START -e END  # 6维切片诊断亏损来源 (周期/类型/评分/风险/出场/板块)
 hit-astocker firstboard / lianban / sector / dragon / flow / predict
+```
+
+## Development Setup
+
+```bash
+pip install -e '.[dev,ml]'           # Install with dev + ML dependencies
+pip install -e '.[dev,ml,llm]'       # Include LLM integration (OpenAI)
+ruff check src/                      # Lint
+ruff format src/                     # Format
+pytest                               # Run tests with coverage
 ```
 
 ## Two-Stage Signal Pipeline
@@ -186,26 +207,16 @@ Context features (6): cycle_phase (ordinal 0-5),
 
 ### Profit Effect Stratification (赚钱效应分层):
 - **维度**: 首板/2板/3板/空间板 × 10cm(主板)/20cm(创科)
-- **指标 (per-tier)**:
-  - 次日开盘溢价: T-1涨停 → T open gap %
-  - 次日收盘收益: T-1涨停 → T close-to-close %
-  - 次日胜率: T close > T-1 close 的占比
-  - 今日炸板率: T 当天该高度的炸板率
-  - 今日非一字率 (可参与度): T 当天该高度可交易的占比
+- **指标**: 次日溢价、次日收益、次日胜率、炸板率、非一字率(可参与度)
 - **Regime**: STRONG(≥65) / NORMAL(≥45) / WEAK(≥25) / FROZEN(<25)
-  - 40% 总体溢价 + 30% 总体胜率 + 15% 正溢价层占比 + 15% 非炸板率
-- **信号管线集成**:
-  - Stage1: FROZEN → market kill; WEAK + score<65 → 过滤; 首板溢价<-1%且胜率<30% → 过滤
-  - RiskAssessor: regime overlay 微调风险阈值 (STRONG放宽/WEAK收紧/FROZEN大幅收紧)
-  - Dashboard: 分层表 + 10cm/20cm 对比表
+- **集成**: Stage1 FROZEN→kill / WEAK→过滤; RiskAssessor regime overlay; Dashboard 分层表
 
 ## Performance Constraints
 
 - **No N+1 queries**: Always use batch methods (`find_recent_bars_batch`, `find_recent_batch`, `find_by_codes`, `get_themes_by_dates`) when loading data for multiple stocks
 - **Composite indexes**: `(ts_code, trade_date DESC)` on `daily_bar`, `stk_factor_pro`, `hsgt_top10`; `(trade_date, tag)` on `kpl_list`; `(ts_code, trade_date)` on `limit_step`, `moneyflow_ths`
 - **Thread safety**: All analyzer queries must be read-only (no DDL, no temp tables). Use CTE/window functions instead. `BoardSurvivalAnalyzer` uses CTE + LEAD() window function for consecutive date pairing
-- **Parallel analyzers**: Independent analyzers run in ThreadPoolExecutor. Never nest ThreadPoolExecutor inside another pool on the same SQLite connection
-- **Sync parallelism**: API HTTP fetches are parallelized (4 workers); DB writes are sequential (SQLite single-writer)
+- **Sequential analyzers**: daily_cmd / signal_cmd run analyzers sequentially (single SQLite connection, not thread-safe). Only SyncOrchestrator uses ThreadPoolExecutor (for HTTP fetches, 4 workers); DB writes are sequential (SQLite single-writer)
 - **ROW_NUMBER batch queries**: Always enumerate columns explicitly in the outer SELECT to exclude the `rn` column
 - **Repo bulk preloading** (training/backtest): `LimitListRepository`, `LimitStepRepository`, `KplRepository` support `preload_range(start, end)` — one bulk SQL loads all records into memory, subsequent per-date queries use dict lookups instead of SQL. All derived methods (count_by_type, find_first_board_stocks, etc.) check `_records_cache` before hitting DB
 - **Shared repo instances**: `DailyContextCaches` holds shared pre-loaded repos (`limit_repo`, `step_repo`, `kpl_repo`, `hm_repo`). Analyzers accept optional repo params (e.g., `limit_repo=None`) — when provided, skip creating new repo instances. This ensures preloaded data is shared across all analyzers in the same `build_daily_context` call
@@ -216,14 +227,15 @@ Context features (6): cycle_phase (ordinal 0-5),
 
 ## Conventions
 
-- Python 3.12+
+- Python 3.11+ (pyproject.toml: `>=3.11`)
 - Use `pydantic-settings` for configuration
 - All scoring on 0-100 scale
 - Use `__slots__` for performance-critical data classes
 - Immutable tuples for collections in model outputs
 - Date format: `date` objects internally, `YYYYMMDD` strings for Tushare API
 - Frozen dataclasses for all model outputs
-- scikit-learn as optional dependency (`pip install 'hit-astocker[ml]'`)
+- Optional dependencies: `[ml]` (scikit-learn), `[llm]` (openai), `[dev]` (pytest, ruff)
+- Linter/formatter: `ruff` (line-length=100, target py311)
 - **所有对话和交流必须使用中文**（包括解释、分析、建议、提问等，commit message 可中英混合）
 - 写完代码后主动提交并推送到 GitHub
 - **每次提交前必须更新 CLAUDE.md**: 结合当前 session 的改动，准确更新 CLAUDE.md 中的架构、模块、性能约束等相关章节，确保文档与代码保持同步
