@@ -239,3 +239,4 @@ Context features (6): cycle_phase (ordinal 0-5),
 - **所有对话和交流必须使用中文**（包括解释、分析、建议、提问等，commit message 可中英混合）
 - 写完代码后主动提交并推送到 GitHub
 - **每次提交前必须更新 CLAUDE.md**: 结合当前 session 的改动，准确更新 CLAUDE.md 中的架构、模块、性能约束等相关章节，确保文档与代码保持同步
+- **每次提交前必须进行代码审查**: 使用 `requesting-code-review` skill 审查本次提交的代码变更（忽略测试类、文档等文件，仅审查业务代码），发现问题立即修复后再提交
