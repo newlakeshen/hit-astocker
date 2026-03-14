@@ -60,7 +60,7 @@ Concurrency model:
   - `stock_sentiment.py` - Per-stock sentiment scoring (8因子: 量比/封单/竞价/题材/催化/人气/北向/技术)
   - `market_context.py` - Market index regime analysis (MA5/MA20 + regime scoring)
   - `signal_validator.py` - T+1 signal validation (legacy, simple close-vs-OHLC)
-  - `backtest_engine.py` - Realistic board-hitting backtest (3 execution modes + dynamic stop/target + T+3 持仓)
+  - `backtest_engine.py` - Realistic board-hitting backtest (3 execution modes + dynamic stop/target + T+3 持仓 + 历史收益率指标)
   - `backtest_diagnosis.py` - 6-dimensional backtest diagnosis (切片分析亏损来源)
   - `predictor.py` - Buy/sell prediction engine
   - `board_survival.py` - 连板生存率统计 (6-year historical P(N+1|N))
@@ -79,7 +79,7 @@ Concurrency model:
 - `repositories/` - SQLite data access layer (17 repositories + base)
   - Includes: `ths_hot_repo.py`, `hsgt_repo.py`, `stk_factor_repo.py`, `hm_repo.py`, `ann_repo.py`, `concept_repo.py`, `auction_repo.py`
 - `models/` - Frozen dataclass models (27 model files)
-  - Includes: `backtest.py` (TradeResult/BacktestStats), `daily_context.py` (DataCoverage/DailyContextCaches), `sentiment_cycle.py` (CyclePhase/SentimentCycle), `event_data.py` (PolicyLevel/OrderAmountLevel), `profit_effect.py` (ProfitRegime/ProfitEffectSnapshot)
+  - Includes: `backtest.py` (TradeResult/BacktestStats/EquityPoint), `daily_context.py` (DataCoverage/DailyContextCaches), `sentiment_cycle.py` (CyclePhase/SentimentCycle), `event_data.py` (PolicyLevel/OrderAmountLevel), `profit_effect.py` (ProfitRegime/ProfitEffectSnapshot)
 - `commands/` - CLI command handlers (15 commands including `train`, `backtest-diag`)
 - `database/` - SQLite connection management, schema migrations
 - `utils/` - Shared utilities:
@@ -105,7 +105,7 @@ hit-astocker train -s START -e END [-m logistic|gbdt] [--min-samples 200]
   # Next signal/backtest run auto-loads trained model
 hit-astocker backtest -s START -e END [-m MODE] [--stop-loss -7] [--take-profit 5] [--no-dynamic-stops] [--detail]
   # MODE: AUCTION (竞价买) / WEAK_TO_STRONG (弱转强) / RE_SEAL (回封买)
-  # T信号 → T+1买入 → T+2卖出, 动态止损止盈(首板紧/龙头宽)
+  # T信号 → T+1买入 → T+2卖出, 动态止损止盈(首板紧/龙头宽), 历史收益率指标(Sharpe/回撤/CAGR)
 hit-astocker backtest-diag -s START -e END  # 6维切片诊断亏损来源 (周期/类型/评分/风险/出场/板块)
 hit-astocker firstboard / lianban / sector / dragon / flow / predict
 ```
@@ -209,6 +209,15 @@ Context features (6): cycle_phase (ordinal 0-5),
 - FOLLOW_BOARD: 同上
 - SECTOR_LEADER: FERMENT/CLIMAX 周期可延长到 T+3 (hold_days=2)
 - T+2 触发止损→立即出 (protection first); T+2 CLOSE→继续持有到 T+3
+
+### Historical Return Metrics (历史收益率):
+- **权益曲线**: 按 exit_date 复利计算, 月末快照降采样
+- **年化收益率 (CAGR)**: (final_equity/100)^(252/N_days) - 1
+- **Sharpe/Sortino** (rf=0): 日收益率序列 (含无交易日=0) 年化
+- **最大回撤**: peak-to-trough 幅度 + 起止日期
+- **Calmar 比率**: CAGR / |max_drawdown| (保留正负号)
+- **月度/年度收益表**: 按 exit_date 分月/年的 BucketStats
+- EquityPoint: (trade_date, equity, daily_return, drawdown)
 
 ### Board Survival Model:
 - Uses up to 6 years of historical limit_step data

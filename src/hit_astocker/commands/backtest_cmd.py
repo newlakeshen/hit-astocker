@@ -124,7 +124,9 @@ def backtest(
     end: str | None = typer.Option(None, "--end", "-e", help="结束日期 (YYYYMMDD)"),
     years: int = typer.Option(6, "--years", help="未指定起止日期时，默认回测近 N 年"),
     mode: str = typer.Option(
-        "AUCTION", "--mode", "-m",
+        "AUCTION",
+        "--mode",
+        "-m",
         help="执行方式: AUCTION / WEAK_TO_STRONG / RE_SEAL",
     ),
     stop_loss: float = typer.Option(-7.0, "--stop-loss", help="止损线 (%%, 负数)"),
@@ -141,8 +143,7 @@ def backtest(
         exec_mode = ExecutionMode(mode.upper())
     except ValueError:
         console.print(
-            f"[bold red]无效执行方式: {mode}[/]"
-            "  (可选: AUCTION / WEAK_TO_STRONG / RE_SEAL)"
+            f"[bold red]无效执行方式: {mode}[/]  (可选: AUCTION / WEAK_TO_STRONG / RE_SEAL)"
         )
         raise typer.Exit(1)
 
@@ -209,7 +210,9 @@ def backtest(
         ths_hot_dates = table_has_data_for_date_batch(conn, "ths_hot", trading_dates)
         hsgt_dates = table_has_data_for_date_batch(conn, "hsgt_top10", trading_dates)
         stk_factor_dates = table_has_data_for_date_batch(
-            conn, "stk_factor_pro", trading_dates,
+            conn,
+            "stk_factor_pro",
+            trading_dates,
         )
         hm_dates = table_has_data_for_date_batch(conn, "hm_detail", trading_dates)
         auction_dates = table_has_data_for_date_batch(conn, "stk_auction", trading_dates)
@@ -252,13 +255,15 @@ def backtest(
             if not t1 or not t2:
                 skip_r = "NO_T1_BAR" if t1 is None else "NO_T2_BAR"
                 for sig in signals:
-                    all_skipped.append(SkippedSignal(
-                        trade_date=sig.trade_date,
-                        ts_code=sig.ts_code,
-                        name=sig.name,
-                        signal_score=sig.composite_score,
-                        skip_reason=skip_r,
-                    ))
+                    all_skipped.append(
+                        SkippedSignal(
+                            trade_date=sig.trade_date,
+                            ts_code=sig.ts_code,
+                            name=sig.name,
+                            signal_score=sig.composite_score,
+                            skip_reason=skip_r,
+                        )
+                    )
                 total_signals += len(signals)
                 continue
 
@@ -268,11 +273,13 @@ def backtest(
             if mc:
                 market_regime = mc.market_regime
             t3 = get_next_trading_day(t2)
-            cycle_phase = (
-                ctx.sentiment_cycle.phase.value if ctx.sentiment_cycle else None
-            )
+            cycle_phase = ctx.sentiment_cycle.phase.value if ctx.sentiment_cycle else None
             day_result = engine.simulate_day(
-                signals, config, d, t1, t2,
+                signals,
+                config,
+                d,
+                t1,
+                t2,
                 exit_date_t3=t3,
                 market_regime=market_regime,
                 cycle_phase=cycle_phase,
@@ -287,11 +294,17 @@ def backtest(
             console.print("[yellow]回测区间内无信号生成[/]")
             raise typer.Exit(0)
 
-        stats = compute_backtest_stats(all_trades, all_skipped, total_signals)
+        stats = compute_backtest_stats(
+            all_trades,
+            all_skipped,
+            total_signals,
+            trading_dates,
+        )
 
         _render_config(config, window.start_label, window.end_label)
         _render_range_coverage(range_coverage)
         _render_summary(stats)
+        _render_return_metrics(stats)
 
         if stats.by_exit:
             _render_exit_breakdown(stats)
@@ -308,6 +321,15 @@ def backtest(
         if stats.by_score:
             _render_score_breakdown(stats)
 
+        if stats.by_year:
+            _render_yearly_returns(stats)
+
+        if stats.by_month:
+            _render_monthly_returns(stats)
+
+        if stats.equity_curve:
+            _render_equity_curve(stats)
+
         if detail and all_trades:
             _render_detail(all_trades)
 
@@ -322,16 +344,20 @@ def backtest(
                 if not isinstance(llm_client, NullClient):
                     llm_cache = LLMCache(conn)
                     bt_narrative = generate_backtest_narrative(
-                        llm_client, stats, all_trades,
+                        llm_client,
+                        stats,
+                        all_trades,
                         cache=llm_cache,
                         use_thinking=True,
                     )
                     if bt_narrative:
-                        console.print(Panel(
-                            bt_narrative,
-                            title="🤖 AI 策略分析",
-                            border_style="magenta",
-                        ))
+                        console.print(
+                            Panel(
+                                bt_narrative,
+                                title="🤖 AI 策略分析",
+                                border_style="magenta",
+                            )
+                        )
             except Exception:
                 logger.warning("LLM backtest narrative failed", exc_info=True)
 
@@ -375,12 +401,11 @@ def _resolve_backtest_window(
         raise typer.Exit(1)
 
     executable_dates = _resolve_executable_signal_dates(
-        sorted(daily_bar_dates), daily_bar_dates,
+        sorted(daily_bar_dates),
+        daily_bar_dates,
     )
     if not executable_dates:
-        console.print(
-            "[bold red]现有 daily_bar 数据不足以形成 T+1/T+2 回测窗口。[/]"
-        )
+        console.print("[bold red]现有 daily_bar 数据不足以形成 T+1/T+2 回测窗口。[/]")
         raise typer.Exit(1)
 
     available_start = min(daily_bar_dates)
@@ -415,7 +440,8 @@ def _collect_range_coverage(
     trading_dates: list[date],
 ) -> BacktestRangeCoverage:
     executable_dates = _resolve_executable_signal_dates(
-        trading_dates, _load_daily_bar_dates(conn),
+        trading_dates,
+        _load_daily_bar_dates(conn),
     )
     if not executable_dates:
         return BacktestRangeCoverage(len(trading_dates), 0, ())
@@ -461,7 +487,6 @@ def _resolve_executable_signal_dates(
             continue
         executable.append(trade_date)
     return executable
-
 
 
 def _render_range_coverage(coverage: BacktestRangeCoverage) -> None:
@@ -511,8 +536,7 @@ def _render_config(config: BacktestConfig, start: str, end: str) -> None:
         f"滑点 {config.slippage_bps:.0f}bp  |  "
         f"手续费 {cost_bps:.0f}bp/笔  |  "
         f"溢价上限 {config.max_open_premium_pct:.0f}%  |  "
-        f"回封换手 ≥{config.min_reseal_turnover:.0f}%"
-        + dynamic_str
+        f"回封换手 ≥{config.min_reseal_turnover:.0f}%" + dynamic_str
     )
     console.print(Panel(text, title="回测配置", border_style="cyan"))
 
@@ -655,6 +679,142 @@ def _render_score_breakdown(stats: BacktestStats) -> None:
             str(bucket.win_count),
             f"[{hr_color}]{bucket.hit_rate:.1%}[/]",
             f"[{pct_color(bucket.avg_pnl)}]{bucket.avg_pnl:+.2f}%[/]",
+        )
+
+    console.print(table)
+
+
+def _render_return_metrics(stats: BacktestStats) -> None:
+    """Render risk-adjusted return metrics panel."""
+    if stats.traded_count == 0 or not stats.equity_curve:
+        return
+
+    table = Table(title="历史收益率指标", header_style="bold cyan")
+    table.add_column("指标", style="bold", width=16)
+    table.add_column("数值", justify="right", width=14)
+
+    # CAGR
+    cagr_color = pct_color(stats.annualized_return)
+    table.add_row("年化收益率", f"[{cagr_color}]{stats.annualized_return:+.2f}%[/]")
+
+    # Volatility
+    table.add_row("年化波动率", f"{stats.annualized_volatility:.2f}%")
+
+    # Sharpe (rf=0)
+    sr_color = "bold red" if stats.sharpe_ratio > 0 else "bold green"
+    table.add_row("Sharpe (rf=0)", f"[{sr_color}]{stats.sharpe_ratio:.2f}[/]")
+
+    # Sortino (rf=0)
+    so_color = "bold red" if stats.sortino_ratio > 0 else "bold green"
+    table.add_row("Sortino (rf=0)", f"[{so_color}]{stats.sortino_ratio:.2f}[/]")
+
+    # Max drawdown
+    dd_color = pct_color(stats.max_drawdown_pct)
+    table.add_row("最大回撤", f"[{dd_color}]{stats.max_drawdown_pct:.2f}%[/]")
+    if stats.max_drawdown_start and stats.max_drawdown_end:
+        dd_dur = (stats.max_drawdown_end - stats.max_drawdown_start).days
+        table.add_row(
+            "回撤区间",
+            f"[dim]{stats.max_drawdown_start} ~ {stats.max_drawdown_end} ({dd_dur}天)[/]",
+        )
+
+    # Calmar
+    cal_color = pct_color(stats.calmar_ratio)
+    table.add_row("Calmar 比率", f"[{cal_color}]{stats.calmar_ratio:.2f}[/]")
+
+    # Streaks
+    table.add_row("最大连赢", f"[bold red]{stats.win_streak}[/]")
+    table.add_row("最大连亏", f"[bold green]{stats.consecutive_losses}[/]")
+
+    console.print(table)
+
+
+def _render_yearly_returns(stats: BacktestStats) -> None:
+    """Render yearly return breakdown."""
+    table = Table(title="年度收益分布", header_style="bold cyan")
+    table.add_column("年份", width=6)
+    table.add_column("笔数", justify="right", width=6)
+    table.add_column("盈利", justify="right", width=5)
+    table.add_column("胜率", justify="right", width=8)
+    table.add_column("平均盈亏", justify="right", width=10)
+    table.add_column("累计盈亏", justify="right", width=10)
+
+    for year_key in sorted(stats.by_year.keys()):
+        bucket = stats.by_year[year_key]
+        hr_color = "bold red" if bucket.hit_rate >= 0.5 else "bold green"
+        table.add_row(
+            year_key,
+            str(bucket.count),
+            str(bucket.win_count),
+            f"[{hr_color}]{bucket.hit_rate:.1%}[/]",
+            f"[{pct_color(bucket.avg_pnl)}]{bucket.avg_pnl:+.2f}%[/]",
+            f"[{pct_color(bucket.total_pnl)}]{bucket.total_pnl:+.2f}%[/]",
+        )
+
+    console.print(table)
+
+
+def _render_monthly_returns(stats: BacktestStats) -> None:
+    """Render monthly return breakdown."""
+    table = Table(title="月度收益分布", header_style="bold cyan")
+    table.add_column("月份", width=8)
+    table.add_column("笔数", justify="right", width=5)
+    table.add_column("盈利", justify="right", width=5)
+    table.add_column("胜率", justify="right", width=8)
+    table.add_column("平均盈亏", justify="right", width=10)
+    table.add_column("累计盈亏", justify="right", width=10)
+
+    for month_key in sorted(stats.by_month.keys()):
+        bucket = stats.by_month[month_key]
+        hr_color = "bold red" if bucket.hit_rate >= 0.5 else "bold green"
+        table.add_row(
+            month_key,
+            str(bucket.count),
+            str(bucket.win_count),
+            f"[{hr_color}]{bucket.hit_rate:.1%}[/]",
+            f"[{pct_color(bucket.avg_pnl)}]{bucket.avg_pnl:+.2f}%[/]",
+            f"[{pct_color(bucket.total_pnl)}]{bucket.total_pnl:+.2f}%[/]",
+        )
+
+    console.print(table)
+
+
+def _render_equity_curve(stats: BacktestStats) -> None:
+    """Render monthly equity curve with mini bar chart."""
+    curve = stats.equity_curve
+    if not curve:
+        return
+
+    table = Table(title="权益曲线 (月末快照)", header_style="bold cyan")
+    table.add_column("月份", width=8)
+    table.add_column("净值", justify="right", width=10)
+    table.add_column("回撤", justify="right", width=8)
+    table.add_column("走势", width=30)
+
+    # Determine range for bar rendering
+    min_eq = min(pt.equity for pt in curve)
+    max_eq = max(pt.equity for pt in curve)
+    eq_range = max_eq - min_eq if max_eq > min_eq else 1.0
+
+    for pt in curve:
+        month_label = pt.trade_date.strftime("%Y-%m")
+        eq_color = pct_color(pt.equity - 100.0)
+        dd_color = "bold green" if pt.drawdown < -5 else "dim"
+
+        # Simple bar: filled proportion of range
+        bar_width = 25
+        fill = int((pt.equity - min_eq) / eq_range * bar_width)
+        fill = max(1, min(fill, bar_width))
+        if pt.equity >= 100.0:
+            bar = f"[bold red]{'█' * fill}[/][dim]{'░' * (bar_width - fill)}[/]"
+        else:
+            bar = f"[bold green]{'█' * fill}[/][dim]{'░' * (bar_width - fill)}[/]"
+
+        table.add_row(
+            month_label,
+            f"[{eq_color}]{pt.equity:.2f}[/]",
+            f"[{dd_color}]{pt.drawdown:.1f}%[/]",
+            bar,
         )
 
     console.print(table)

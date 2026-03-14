@@ -53,17 +53,17 @@ class BacktestConfig:
     stop_loss_pct: float = -7.0
     take_profit_pct: float = 8.0
     # ── friction ──
-    slippage_bps: float = 10.0              # 滑点 (基点), 单边
-    commission_rate: float = 0.00025         # 佣金 (万2.5), 单边
-    stamp_duty_rate: float = 0.0005          # 印花税 (千0.5), 仅卖出
-    max_open_premium_pct: float = 9.0        # 竞价溢价上限 (%), 超过不追
-    min_reseal_turnover: float = 3.0         # 回封最低换手率 (%), 低于则跳过
+    slippage_bps: float = 10.0  # 滑点 (基点), 单边
+    commission_rate: float = 0.00025  # 佣金 (万2.5), 单边
+    stamp_duty_rate: float = 0.0005  # 印花税 (千0.5), 仅卖出
+    max_open_premium_pct: float = 9.0  # 竞价溢价上限 (%), 超过不追
+    min_reseal_turnover: float = 3.0  # 回封最低换手率 (%), 低于则跳过
     # ── 动态止损/止盈 (按信号类型调整, 0=使用默认) ──
-    dynamic_stops: bool = True              # 是否启用动态止损/止盈
+    dynamic_stops: bool = True  # 是否启用动态止损/止盈
     # ── 持仓天数 (按信号类型) ──
-    hold_days_first_board: int = 1      # T+1买 T+2卖 (默认)
-    hold_days_follow_board: int = 1     # 同上
-    hold_days_sector_leader: int = 1    # 默认T+2, 可设为2 (T+3)
+    hold_days_first_board: int = 1  # T+1买 T+2卖 (默认)
+    hold_days_follow_board: int = 1  # 同上
+    hold_days_sector_leader: int = 1  # 默认T+2, 可设为2 (T+3)
 
     def __post_init__(self) -> None:
         if self.stop_loss_pct >= 0:
@@ -106,7 +106,9 @@ class BacktestConfig:
         return self.hold_days_first_board
 
     def effective_stops_with_regime(
-        self, signal_type: str, market_regime: str | None = None,
+        self,
+        signal_type: str,
+        market_regime: str | None = None,
     ) -> tuple[float, float]:
         """Type-specific stops adjusted by market regime."""
         base_stop, base_target = self.effective_stops(signal_type)
@@ -120,9 +122,9 @@ class BacktestConfig:
 
         # Regime adjustments (positive = tighter stop / wider take)
         regime_adj = {
-            "STRONG_BULL": (1.0, 2.0),   # tighter stop, wider take
-            "BEAR": (1.5, -1.0),          # tighter stop, tighter take
-            "STRONG_BEAR": (2.0, -2.0),   # most aggressive
+            "STRONG_BULL": (1.0, 2.0),  # tighter stop, wider take
+            "BEAR": (1.5, -1.0),  # tighter stop, tighter take
+            "STRONG_BEAR": (2.0, -2.0),  # most aggressive
         }
         stop_adj, take_adj = regime_adj.get(market_regime, (0.0, 0.0))
 
@@ -143,22 +145,22 @@ class BacktestConfig:
 class TradeResult:
     """A single executed trade (net of all friction costs)."""
 
-    trade_date: date      # signal date (T)
-    entry_date: date      # buy date (T+1)
-    exit_date: date       # sell date (T+2)
+    trade_date: date  # signal date (T)
+    entry_date: date  # buy date (T+1)
+    exit_date: date  # sell date (T+2)
     ts_code: str
     name: str
     signal_type: str
     signal_score: float
     risk_level: str
     execution_mode: str
-    entry_price: float    # effective entry (after slippage)
-    exit_price: float     # effective exit (after slippage)
+    entry_price: float  # effective entry (after slippage)
+    exit_price: float  # effective exit (after slippage)
     exit_reason: str
-    pnl_pct: float        # net PnL after all costs
-    cost_pct: float       # round-trip friction cost as % of entry
-    t1_open_pct: float    # T+1 open vs T close (%)
-    cycle_phase: str | None = None    # sentiment cycle phase at signal time
+    pnl_pct: float  # net PnL after all costs
+    cost_pct: float  # round-trip friction cost as % of entry
+    t1_open_pct: float  # T+1 open vs T close (%)
+    cycle_phase: str | None = None  # sentiment cycle phase at signal time
     profit_regime: str | None = None  # profit effect regime at signal time
 
 
@@ -196,6 +198,16 @@ class BucketStats:
 
 
 @dataclass(frozen=True)
+class EquityPoint:
+    """Equity curve data point."""
+
+    trade_date: date
+    equity: float
+    daily_return: float  # % return on this day
+    drawdown: float  # % from peak (negative)
+
+
+@dataclass(frozen=True)
 class BacktestStats:
     total_signals: int
     traded_count: int
@@ -205,13 +217,26 @@ class BacktestStats:
     hit_rate: float
     avg_pnl: float
     total_pnl: float
-    avg_cost: float            # mean cost_pct per trade
+    avg_cost: float  # mean cost_pct per trade
     max_win: float
     max_loss: float
-    profit_factor: float       # gross_profit / |gross_loss|, inf if no loss
+    profit_factor: float  # gross_profit / |gross_loss|, inf if no loss
     consecutive_losses: int
     by_exit: dict[str, BucketStats] = field(default_factory=dict)
     by_type: dict[str, BucketStats] = field(default_factory=dict)
     by_risk: dict[str, BucketStats] = field(default_factory=dict)
     by_score: dict[str, BucketStats] = field(default_factory=dict)
     skip_summary: dict[str, int] = field(default_factory=dict)
+    # ── Historical return metrics ──
+    annualized_return: float = 0.0  # CAGR (%)
+    annualized_volatility: float = 0.0  # annualized std (%)
+    sharpe_ratio: float = 0.0  # Sharpe (rf=0)
+    sortino_ratio: float = 0.0  # Sortino (downside dev)
+    max_drawdown_pct: float = 0.0  # peak-to-trough (%, negative)
+    max_drawdown_start: date | None = None
+    max_drawdown_end: date | None = None
+    calmar_ratio: float = 0.0  # |CAGR| / |max_drawdown|
+    win_streak: int = 0  # max consecutive wins
+    by_month: dict[str, BucketStats] = field(default_factory=dict)
+    by_year: dict[str, BucketStats] = field(default_factory=dict)
+    equity_curve: tuple[EquityPoint, ...] = ()
