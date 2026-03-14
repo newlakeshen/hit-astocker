@@ -157,33 +157,35 @@ def _cycle_gate(candidate: ScoredCandidate, cycle: SentimentCycle | None) -> Ris
     score = candidate.score
 
     if phase == CyclePhase.RETREAT:
-        # 退潮: 全面空仓, 龙头/连板 75+ 可小仓参与
-        if sig_type in ("SECTOR_LEADER", "FOLLOW_BOARD") and score >= 75:
-            return RiskLevel.HIGH
-        return RiskLevel.NO_GO
-
-    if phase == CyclePhase.ICE:
-        # 冰点: 龙头/连板 75+ 可博反包, score≥70 可轻仓试探
-        if sig_type in ("SECTOR_LEADER", "FOLLOW_BOARD") and score >= 75:
+        # 退潮: 龙头/连板 65+ 可小仓, 首板 70+ 可轻仓试探
+        if sig_type in ("SECTOR_LEADER", "FOLLOW_BOARD") and score >= 65:
             return RiskLevel.HIGH
         if score >= 70:
             return RiskLevel.HIGH
         return RiskLevel.NO_GO
 
+    if phase == CyclePhase.ICE:
+        # 冰点: 龙头/连板 60+ 可博反包, 首板 65+ 可轻仓
+        if sig_type in ("SECTOR_LEADER", "FOLLOW_BOARD") and score >= 60:
+            return RiskLevel.HIGH
+        if score >= 60:
+            return RiskLevel.HIGH
+        return RiskLevel.NO_GO
+
     if phase == CyclePhase.DIVERGE:
-        # 分歧: 首板高分白名单 (核心因子同时极强时放行)
+        # 分歧: 首板需封板或题材其一较强, 连板/龙头适度放宽
         f = candidate.factors
         if sig_type == "FIRST_BOARD":
             sq = f.get("seal_quality", 0)
             th = f.get("theme_heat", 0)
-            if score >= 70 and sq >= 70 and th >= 70:
-                return RiskLevel.HIGH  # 高分+强封板+热题材 → QUARTER 仓位
-            return RiskLevel.NO_GO  # 其他首板仍然禁止
+            if score >= 65 and (sq >= 60 or th >= 60):
+                return RiskLevel.HIGH
+            return RiskLevel.NO_GO
         if sig_type == "FOLLOW_BOARD":
-            return RiskLevel.NO_GO if score < 75 else RiskLevel.HIGH
+            return RiskLevel.NO_GO if score < 65 else RiskLevel.HIGH
         if sig_type == "SECTOR_LEADER":
-            return RiskLevel.NO_GO if score < 80 else RiskLevel.HIGH
-        return RiskLevel.NO_GO if score < 75 else RiskLevel.HIGH
+            return RiskLevel.NO_GO if score < 70 else RiskLevel.HIGH
+        return RiskLevel.NO_GO if score < 65 else RiskLevel.HIGH
 
     if phase == CyclePhase.REPAIR:
         # 修复初期 (score_delta > 0): 修复期是好入场时机, 放宽参与

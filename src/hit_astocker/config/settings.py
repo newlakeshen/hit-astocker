@@ -11,15 +11,15 @@ class Settings(BaseSettings):
     db_path: Path = Path("data/hit_astocker.db")
 
     # Sentiment scoring weights (9-factor, sum=1)
-    sentiment_up_down_ratio_weight: float = 0.12       # 涨跌停比
-    sentiment_broken_recovery_weight: float = 0.12     # 炸板/修复率
-    sentiment_promotion_rate_weight: float = 0.10      # 总晋级率
-    sentiment_height_promotion_weight: float = 0.08    # 高位晋级率 (2→3, 3→4)
-    sentiment_max_height_weight: float = 0.08          # 连板高度
-    sentiment_prev_premium_weight: float = 0.18        # 昨日涨停次日溢价
-    sentiment_yizi_ratio_weight: float = 0.10          # 一字板占比
-    sentiment_board_structure_weight: float = 0.12     # 首板结构 (10cm/20cm)
-    sentiment_auction_strength_weight: float = 0.10    # 竞价强弱
+    sentiment_up_down_ratio_weight: float = 0.12  # 涨跌停比
+    sentiment_broken_recovery_weight: float = 0.12  # 炸板/修复率
+    sentiment_promotion_rate_weight: float = 0.10  # 总晋级率
+    sentiment_height_promotion_weight: float = 0.08  # 高位晋级率 (2→3, 3→4)
+    sentiment_max_height_weight: float = 0.08  # 连板高度
+    sentiment_prev_premium_weight: float = 0.18  # 昨日涨停次日溢价
+    sentiment_yizi_ratio_weight: float = 0.10  # 一字板占比
+    sentiment_board_structure_weight: float = 0.12  # 首板结构 (10cm/20cm)
+    sentiment_auction_strength_weight: float = 0.10  # 竞价强弱
 
     # Risk thresholds
     risk_extreme_score: float = 20.0
@@ -34,10 +34,10 @@ class Settings(BaseSettings):
     signal_top_sector_count: int = 3
 
     # Portfolio constraints (信号 → 交易决策)
-    signal_min_score: float = 65.0       # 动态评分门槛 (基准值, 随行情/周期调整)
-    signal_top_k: int = 2                # 每日最多输出信号数
-    signal_max_per_theme: int = 1        # 单题材最大信号数 (防集中)
-    signal_max_per_type: int = 3         # 单板型最大信号数 (首板/连板/龙头)
+    signal_min_score: float = 50.0  # 动态评分门槛 (基准值, 随行情/周期调整)
+    signal_top_k: int = 5  # 每日最多输出信号数
+    signal_max_per_theme: int = 2  # 单题材最大信号数 (防集中)
+    signal_max_per_type: int = 5  # 单板型最大信号数 (首板/连板/龙头)
 
     # First board scoring weights (5-factor, sum=1)
     first_board_seal_time_weight: float = 0.25
@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     survival_lookback_years: int = 6
 
     # ML model control
-    use_ml_model: bool = False              # 默认不启用 ML 模型, 规则评分为主路径
+    use_ml_model: bool = False  # 默认不启用 ML 模型, 规则评分为主路径
 
     # API settings
     api_batch_size: int = 50
@@ -130,36 +130,49 @@ class Settings(BaseSettings):
                 self.first_board_sector_weight,
             ],
             "fb (FIRST_BOARD)": [
-                self.fb_sentiment_weight, self.fb_seal_quality_weight,
-                self.fb_sector_weight, self.fb_survival_weight,
-                self.fb_capital_flow_weight, self.fb_dragon_tiger_weight,
-                self.fb_event_catalyst_weight, self.fb_stock_sentiment_weight,
-                self.fb_northbound_weight, self.fb_technical_form_weight,
+                self.fb_sentiment_weight,
+                self.fb_seal_quality_weight,
+                self.fb_sector_weight,
+                self.fb_survival_weight,
+                self.fb_capital_flow_weight,
+                self.fb_dragon_tiger_weight,
+                self.fb_event_catalyst_weight,
+                self.fb_stock_sentiment_weight,
+                self.fb_northbound_weight,
+                self.fb_technical_form_weight,
                 self.fb_auction_quality_weight,
             ],
             "fl (FOLLOW_BOARD)": [
-                self.fl_sentiment_weight, self.fl_survival_weight,
-                self.fl_height_momentum_weight, self.fl_sector_weight,
-                self.fl_capital_flow_weight, self.fl_dragon_tiger_weight,
-                self.fl_event_catalyst_weight, self.fl_stock_sentiment_weight,
-                self.fl_northbound_weight, self.fl_technical_form_weight,
+                self.fl_sentiment_weight,
+                self.fl_survival_weight,
+                self.fl_height_momentum_weight,
+                self.fl_sector_weight,
+                self.fl_capital_flow_weight,
+                self.fl_dragon_tiger_weight,
+                self.fl_event_catalyst_weight,
+                self.fl_stock_sentiment_weight,
+                self.fl_northbound_weight,
+                self.fl_technical_form_weight,
                 self.fl_auction_quality_weight,
             ],
             "sl (SECTOR_LEADER)": [
-                self.sl_sentiment_weight, self.sl_theme_heat_weight,
-                self.sl_leader_position_weight, self.sl_sector_weight,
-                self.sl_capital_flow_weight, self.sl_dragon_tiger_weight,
-                self.sl_event_catalyst_weight, self.sl_stock_sentiment_weight,
-                self.sl_northbound_weight, self.sl_technical_form_weight,
+                self.sl_sentiment_weight,
+                self.sl_theme_heat_weight,
+                self.sl_leader_position_weight,
+                self.sl_sector_weight,
+                self.sl_capital_flow_weight,
+                self.sl_dragon_tiger_weight,
+                self.sl_event_catalyst_weight,
+                self.sl_stock_sentiment_weight,
+                self.sl_northbound_weight,
+                self.sl_technical_form_weight,
                 self.sl_auction_quality_weight,
             ],
         }
         for name, weights in groups.items():
             total = sum(weights)
             if abs(total - 1.0) > _WEIGHT_TOLERANCE:
-                raise ValueError(
-                    f"{name} weights sum to {total:.4f}, expected 1.0"
-                )
+                raise ValueError(f"{name} weights sum to {total:.4f}, expected 1.0")
         return self
 
 

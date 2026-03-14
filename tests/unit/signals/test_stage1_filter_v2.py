@@ -4,6 +4,7 @@
 Stage1Filter._should_filter() is a @staticmethod that takes (ScoredCandidate, DailyAnalysisContext).
 We use MagicMock for both to test individual filter conditions.
 """
+
 from unittest.mock import MagicMock
 from hit_astocker.signals.stage1_filter import Stage1Filter, _profit_effect_gate
 
@@ -40,18 +41,18 @@ def _make_ctx(cycle_phase=None, profit_effect=None):
     return ctx
 
 
-def test_seal_quality_below_35_filtered():
-    """seal_quality=30 should be filtered (<35 threshold)."""
-    c = _make_candidate(signal_type="FIRST_BOARD", seal_quality=30.0)
+def test_seal_quality_below_25_filtered():
+    """seal_quality=20 should be filtered (<25 threshold, v16: relaxed from 35)."""
+    c = _make_candidate(signal_type="FIRST_BOARD", seal_quality=20.0)
     ctx = _make_ctx()
     reason = Stage1Filter._should_filter(c, ctx)
     assert reason is not None
     assert "封板质量" in reason
 
 
-def test_seal_quality_35_passes():
-    """seal_quality=35 passes the threshold."""
-    c = _make_candidate(signal_type="FIRST_BOARD", seal_quality=35.0)
+def test_seal_quality_25_passes():
+    """seal_quality=30 passes the threshold (v16: relaxed from 35)."""
+    c = _make_candidate(signal_type="FIRST_BOARD", seal_quality=30.0)
     ctx = _make_ctx()
     reason = Stage1Filter._should_filter(c, ctx)
     assert reason is None or "封板质量" not in reason
@@ -89,7 +90,7 @@ def test_first_board_profit_effect_tightened():
     tier = MagicMock()
     tier.prev_count = 10
     tier.avg_premium = -2.5  # < -2.0
-    tier.win_rate = 0.30     # < 0.35
+    tier.win_rate = 0.30  # < 0.35
     pe.tier_for_height.return_value = tier
     pe.tier_for_height_by_type.return_value = None  # fallback to tier_for_height
     c = _make_candidate(signal_type="FIRST_BOARD", score=75.0)

@@ -127,9 +127,9 @@ Removes candidates that should never be traded:
 - ST / BJ / 风险警示 (制度性排除)
 - 大盘暴跌 (上证 ≤ -3% 或 创业板 ≤ -4%)
 - 情绪极度低迷 (overall_score < 25)
-- 退潮期: 除龙头/连板(score≥85)外全部回避
-- 冰点期: score < 65 回避
-- 首板封板质量极差 (seal_quality < 35)
+- 退潮期: 龙头/连板 score<70 回避, 首板 score<75 回避
+- 冰点期: score < 50 回避
+- 首板封板质量极差 (seal_quality < 25)
 - 连板生存率极低 (survival < 30, 高位板递增: 3板≥25/4板≥30/5板+≥35)
 - 赚钱效应门控: 按 10cm/20cm 分层查询, 样本不足时 fallback 到总体层
 
@@ -179,7 +179,7 @@ Context features (6): cycle_phase (ordinal 0-5),
 
 ### Risk Assessment (Cycle + Regime):
 - Thresholds auto-adjust by market regime (STRONG_BULL → STRONG_BEAR)
-- **Cycle gating**: emotion phase overrides risk (DIVERGE: FIRST_BOARD白名单式放行, RETREAT/ICE: 75+可参与, REPAIR初期: 65+→MEDIUM)
+- **Cycle gating**: emotion phase overrides risk (DIVERGE: FIRST_BOARD白名单式放行(sq≥60或th≥60), RETREAT: 龙头/连板65+/首板70+→HIGH, ICE: 60+→HIGH, REPAIR初期: 65+→MEDIUM)
 - Index-based kill conditions (大盘暴跌 → NO_GO)
 - 5 levels: LOW → FULL, MEDIUM → HALF, HIGH → QUARTER, EXTREME/NO_GO → ZERO
 

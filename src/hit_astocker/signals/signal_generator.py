@@ -124,7 +124,9 @@ class SignalGenerator:
         """Stage 2 (ML): score candidates using trained model."""
         # Build feature matrix
         features = build_feature_matrix(
-            candidates, ctx.sentiment_cycle, ctx.coverage,
+            candidates,
+            ctx.sentiment_cycle,
+            ctx.coverage,
         )
 
         # Predict probability of profitable trade
@@ -142,7 +144,8 @@ class SignalGenerator:
 
             # Risk assessment still uses rule-based logic for position sizing
             risk = self._risk_assessor.assess(
-                candidate, ctx.sentiment,
+                candidate,
+                ctx.sentiment,
                 cycle=ctx.sentiment_cycle,
                 profit_effect=ctx.profit_effect,
             )
@@ -152,19 +155,21 @@ class SignalGenerator:
             position = RiskAssessor.position_hint(risk)
             reason = self._build_reason(candidate, ctx.sentiment, ctx.lianban, ctx.event)
 
-            signals.append(TradingSignal(
-                trade_date=ctx.trade_date,
-                ts_code=candidate.ts_code,
-                name=candidate.name,
-                signal_type=SignalType(candidate.signal_type),
-                composite_score=ml_score,
-                risk_level=risk,
-                position_hint=position,
-                factors=candidate.factors,
-                reason=reason,
-                score_source="model",
-                theme=candidate.theme,
-            ))
+            signals.append(
+                TradingSignal(
+                    trade_date=ctx.trade_date,
+                    ts_code=candidate.ts_code,
+                    name=candidate.name,
+                    signal_type=SignalType(candidate.signal_type),
+                    composite_score=ml_score,
+                    risk_level=risk,
+                    position_hint=position,
+                    factors=candidate.factors,
+                    reason=reason,
+                    score_source="model",
+                    theme=candidate.theme,
+                )
+            )
 
         return signals
 
@@ -175,7 +180,8 @@ class SignalGenerator:
         signals = []
         for candidate in candidates:
             risk = self._risk_assessor.assess(
-                candidate, ctx.sentiment,
+                candidate,
+                ctx.sentiment,
                 cycle=ctx.sentiment_cycle,
                 profit_effect=ctx.profit_effect,
             )
@@ -185,19 +191,21 @@ class SignalGenerator:
             position = RiskAssessor.position_hint(risk)
             reason = self._build_reason(candidate, ctx.sentiment, ctx.lianban, ctx.event)
 
-            signals.append(TradingSignal(
-                trade_date=ctx.trade_date,
-                ts_code=candidate.ts_code,
-                name=candidate.name,
-                signal_type=SignalType(candidate.signal_type),
-                composite_score=candidate.score,
-                risk_level=risk,
-                position_hint=position,
-                factors=candidate.factors,
-                reason=reason,
-                score_source="rules",
-                theme=candidate.theme,
-            ))
+            signals.append(
+                TradingSignal(
+                    trade_date=ctx.trade_date,
+                    ts_code=candidate.ts_code,
+                    name=candidate.name,
+                    signal_type=SignalType(candidate.signal_type),
+                    composite_score=candidate.score,
+                    risk_level=risk,
+                    position_hint=position,
+                    factors=candidate.factors,
+                    reason=reason,
+                    score_source="rules",
+                    theme=candidate.theme,
+                )
+            )
 
         return signals
 
@@ -225,7 +233,9 @@ class SignalGenerator:
 
         # ── 1. Dynamic score threshold + core factor express ──
         min_score = _dynamic_min_score(
-            s.signal_min_score, ctx.sentiment, ctx.sentiment_cycle,
+            s.signal_min_score,
+            ctx.sentiment,
+            ctx.sentiment_cycle,
             profit_regime=profit_regime,
         )
         above = [sig for sig in signals if sig.composite_score >= min_score]
@@ -240,7 +250,10 @@ class SignalGenerator:
                 express.append(sig)
                 logger.info(
                     "核心因子直通: %s (%s) score=%.0f < min=%.0f",
-                    sig.ts_code, sig.name, sig.composite_score, min_score,
+                    sig.ts_code,
+                    sig.name,
+                    sig.composite_score,
+                    min_score,
                 )
         signals = above + express
         if not signals:
@@ -270,12 +283,16 @@ class SignalGenerator:
                 else:
                     logger.debug(
                         "题材集中度过滤: %s (%s) — 题材 '%s' 已达上限",
-                        sig.ts_code, sig.name, key,
+                        sig.ts_code,
+                        sig.name,
+                        key,
                     )
             else:
                 logger.debug(
                     "题材集中度过滤: %s (%s) — 题材 '%s' 已达上限",
-                    sig.ts_code, sig.name, key,
+                    sig.ts_code,
+                    sig.name,
+                    key,
                 )
         signals = theme_filtered
 
@@ -292,7 +309,10 @@ class SignalGenerator:
             else:
                 logger.debug(
                     "板型集中度过滤: %s (%s) — %s 已达上限 %d",
-                    sig.ts_code, sig.name, key, max_type,
+                    sig.ts_code,
+                    sig.name,
+                    key,
+                    max_type,
                 )
         signals = type_filtered
 
@@ -309,12 +329,13 @@ class SignalGenerator:
             # 检查边界分差: 与 cutoff 分差 < 5 的额外信号可多放1只
             cutoff = signals[effective_top_k - 1].composite_score
             extended = [
-                sig for sig in signals[effective_top_k:]
-                if sig.composite_score >= cutoff - 5
+                sig for sig in signals[effective_top_k:] if sig.composite_score >= cutoff - 5
             ]
             logger.info(
                 "TopK 截断: %d → %d (+%d 边界放行)",
-                len(signals), effective_top_k, min(len(extended), 1),
+                len(signals),
+                effective_top_k,
+                min(len(extended), 1),
             )
             signals = signals[:effective_top_k] + extended[:1]
 
@@ -323,13 +344,17 @@ class SignalGenerator:
     # -- internals -----------------------------------------------------------
 
     def _enhance_reasons_with_llm(
-        self, signals: list[TradingSignal], ctx: DailyAnalysisContext,
+        self,
+        signals: list[TradingSignal],
+        ctx: DailyAnalysisContext,
     ) -> list[TradingSignal]:
         """Replace rule-based reasons with LLM-generated ones (batch call)."""
         try:
             from hit_astocker.llm.narrative_gen import generate_signal_reasons
+
             reason_map = generate_signal_reasons(
-                self._llm_client, signals,
+                self._llm_client,
+                signals,
                 event_result=ctx.event,
                 cache=self._llm_cache,
             )
@@ -468,22 +493,22 @@ def _dynamic_min_score(
 ) -> float:
     """Compute adaptive score threshold from market regime + sentiment cycle.
 
-    基准 50 → STRONG_BULL 可放宽到 42, STRONG_BEAR 收紧到 58.
-    ICE/RETREAT 额外 +8, DIVERGE +5 (防止弱势期低质信号通过).
-    CLIMAX 末期 +3 (警惕见顶), FERMENT -2 (正常放宽鼓励参与).
+    v16 放宽: 降低各环节惩罚幅度, 让更多信号进入回测评估.
+    基准 50 → STRONG_BULL 可放宽到 45, STRONG_BEAR 收紧到 55.
+    ICE/RETREAT +5, DIVERGE +3, REPAIR 不加 (修复期鼓励参与).
     """
     threshold = base
 
-    # ── 1. Market regime adjustment (conservative: avoid over-relaxing) ──
+    # ── 1. Market regime adjustment ──
     ctx = sentiment.market_context
     if ctx:
         regime = ctx.market_regime
         regime_adj = {
             "STRONG_BULL": -5,
-            "BULL": -2,
+            "BULL": -3,
             "NEUTRAL": 0,
-            "BEAR": +5,
-            "STRONG_BEAR": +8,
+            "BEAR": +3,
+            "STRONG_BEAR": +5,
         }
         threshold += regime_adj.get(regime, 0)
 
@@ -491,21 +516,21 @@ def _dynamic_min_score(
     if cycle:
         phase = cycle.phase
         if phase in (CyclePhase.ICE, CyclePhase.RETREAT):
-            threshold += 8
-        elif phase == CyclePhase.DIVERGE:
             threshold += 5
-        elif phase == CyclePhase.REPAIR:
+        elif phase == CyclePhase.DIVERGE:
             threshold += 3
+        elif phase == CyclePhase.REPAIR:
+            pass  # 修复期是好入场时机, 不加惩罚
         elif phase == CyclePhase.CLIMAX and cycle.score_delta < -1:
-            threshold += 8  # 高潮末期: 大幅收紧, 接近 DIVERGE 水平
+            threshold += 5  # 高潮末期: 适度收紧
         elif phase == CyclePhase.FERMENT:
-            threshold -= 2
+            threshold -= 3
 
     # ── 3. Profit regime adjustment ──
     if profit_regime == "WEAK":
-        threshold += 5
+        threshold += 3
 
-    return max(30.0, min(75.0, threshold))  # clamp to [30, 75]
+    return max(30.0, min(65.0, threshold))  # clamp to [30, 65]
 
 
 def _dynamic_top_k(
@@ -513,26 +538,30 @@ def _dynamic_top_k(
     cycle_phase: str | None,
     score_delta: float,
 ) -> int:
-    """Compute dynamic daily signal cap based on market state."""
-    if profit_regime == "FROZEN":
-        return 0
+    """Compute dynamic daily signal cap based on market state.
 
-    base = 2  # settings.signal_top_k default
+    放宽后 (v16): FROZEN 允许 1 个, WEAK 允许 2 个, 其余 3-5 个.
+    保证回测有足够样本量做统计分析.
+    """
+    if profit_regime == "FROZEN":
+        return 1  # 极端行情仍允许极强信号
+
+    base = 5  # align with settings.signal_top_k
 
     if profit_regime == "WEAK":
-        return 1
+        return 2
 
     if profit_regime == "NORMAL":
         if cycle_phase == "FERMENT":
             return base
-        return 1
+        return 3
 
     if profit_regime == "STRONG":
         if cycle_phase in ("FERMENT", "CLIMAX") and score_delta >= 0:
             return base
         if cycle_phase == "CLIMAX" and score_delta < 0:
-            return 1
+            return 2
         return base
 
-    # Unknown/None regime → conservative
-    return 1
+    # Unknown/None regime
+    return 3

@@ -57,7 +57,8 @@ class Stage1Filter:
 
         logger.info(
             "Stage1: %d/%d candidates pass hard filter",
-            len(result), len(candidates),
+            len(result),
+            len(candidates),
         )
         return result
 
@@ -95,21 +96,22 @@ class Stage1Filter:
         if should_exclude(c.ts_code, c.name):
             return "ST/BJ/风险警示"
 
-        # 2. 退潮期: 除绝对龙头外全部回避
+        # 2. 退潮期: 龙头/连板 70+ 可参与, 首板 75+
         cycle = ctx.sentiment_cycle
         if cycle and cycle.phase == CyclePhase.RETREAT:
-            if not (c.signal_type == "SECTOR_LEADER" and c.score >= 85):
-                return f"退潮期 (score={c.score:.0f})"
+            min_retreat = 70 if c.signal_type in ("SECTOR_LEADER", "FOLLOW_BOARD") else 75
+            if c.score < min_retreat:
+                return f"退潮期 (score={c.score:.0f}<{min_retreat})"
 
-        # 3. 冰点期: 仅高分标的可参与 (放宽: 冰点整体分偏低)
+        # 3. 冰点期: score<50 过滤 (放宽: 冰点整体分偏低)
         if cycle and cycle.phase == CyclePhase.ICE:
-            if c.score < 65:
+            if c.score < 50:
                 return f"冰点期 (score={c.score:.0f})"
 
-        # 4. 首板封板质量硬伤 (stage1只滤明显差的, 边界案例留给Stage2)
+        # 4. 首板封板质量硬伤 (仅滤极差的, 边界案例留给Stage2)
         if c.signal_type == "FIRST_BOARD":
             sq = c.factors.get("seal_quality", 0)
-            if sq < 35:
+            if sq < 25:
                 return f"封板质量差 (seal_quality={sq:.0f})"
 
         # 4b. 赚钱效应分层门控 (数据驱动, 替代部分经验阈值)
@@ -177,10 +179,7 @@ def _profit_effect_gate(
             tier = pe.tier_for_height(1)
         if tier and tier.prev_count >= 5:
             if tier.avg_premium < -2.0 and tier.win_rate < 0.35:
-                return (
-                    f"首板赚钱效应极差 "
-                    f"(溢价={tier.avg_premium:+.1f}% 胜率={tier.win_rate:.0%})"
-                )
+                return f"首板赚钱效应极差 (溢价={tier.avg_premium:+.1f}% 胜率={tier.win_rate:.0%})"
 
     if c.signal_type == "FOLLOW_BOARD":
         height = _infer_height(c.factors.get("height_momentum", 0))
@@ -201,13 +200,10 @@ def _profit_effect_gate(
             tier = pe.tier_for_height(height)
         if tier and tier.prev_count >= 3:
             if tier.broken_rate > 0.60:
-                return (
-                    f"空间板炸板率过高 "
-                    f"(broken_rate={tier.broken_rate:.0%})"
-                )
+                return f"空间板炸板率过高 (broken_rate={tier.broken_rate:.0%})"
 
-    # 弱 regime 下的附加门控: 非高分标的应审慎
-    if pe.regime == ProfitRegime.WEAK and c.score < 65:
+    # 弱 regime 下的附加门控: 极低分才过滤
+    if pe.regime == ProfitRegime.WEAK and c.score < 50:
         return f"赚钱效应偏弱 (regime={pe.regime_score:.0f})"
 
     return None
