@@ -224,6 +224,6 @@ Context features (6): cycle_phase (ordinal 0-5),
 - Date format: `date` objects internally, `YYYYMMDD` strings for Tushare API
 - Frozen dataclasses for all model outputs
 - scikit-learn as optional dependency (`pip install 'hit-astocker[ml]'`)
-- 所有交流使用中文
+- **所有对话和交流必须使用中文**（包括解释、分析、建议、提问等，commit message 可中英混合）
 - 写完代码后主动提交并推送到 GitHub
 - **每次提交前必须更新 CLAUDE.md**: 结合当前 session 的改动，准确更新 CLAUDE.md 中的架构、模块、性能约束等相关章节，确保文档与代码保持同步
