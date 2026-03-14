@@ -98,7 +98,7 @@ class DailyContextCaches:
 
     Performance fields (populated before training loop):
     - limit_repo / step_repo / kpl_repo: shared pre-loaded repo instances
-    - global_coverage: single coverage check (tables don't change mid-training)
+    - coverage_cache: per-day data coverage (batch pre-populated)
     - light_metrics_cache: SentimentCycleDetector lookback metrics (3/4 overlap)
     - concept_members_cache: concept membership (structural, rarely changes)
     """
@@ -110,7 +110,6 @@ class DailyContextCaches:
     limit_repo: LimitListRepository | None = None
     step_repo: LimitStepRepository | None = None
     kpl_repo: KplRepository | None = None
-    global_coverage: DataCoverage | None = None
     hm_repo: HmRepository | None = None
     light_metrics_cache: dict[date, Any] = field(default_factory=dict)
     concept_members_cache: dict[str, list[str]] = field(default_factory=dict)
@@ -129,6 +128,36 @@ def table_has_data(conn: sqlite3.Connection, table: str) -> bool:
         return row is not None
     except sqlite3.OperationalError:
         return False
+
+
+def table_has_data_for_date_batch(
+    conn: sqlite3.Connection,
+    table: str,
+    dates: list[date],
+    *,
+    date_column: str = "trade_date",
+) -> set[date]:
+    """Batch-check which dates have data in a table.
+
+    Returns a set of dates that have at least one row.
+    Single SQL query (SELECT DISTINCT) — O(1) round-trips vs O(N) for per-date checks.
+    """
+    if not dates:
+        return set()
+    try:
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if not exists:
+            return set()
+        rows = conn.execute(
+            f"SELECT DISTINCT [{date_column}] FROM [{table}]",  # noqa: S608
+        ).fetchall()
+        db_dates_str = {r[0] for r in rows}
+        return {d for d in dates if d.strftime("%Y%m%d") in db_dates_str}
+    except sqlite3.OperationalError:
+        return set()
 
 
 def table_has_data_for_date(
@@ -193,11 +222,9 @@ def build_daily_context(
     step_repo = caches.step_repo if caches and caches.step_repo else _StepRepo(conn)
     kpl_repo = caches.kpl_repo if caches and caches.kpl_repo else _KplRepo(conn)
 
-    # ── Data coverage detection ──
-    # Use global coverage (table-level, invariant during training) if available
-    if caches and caches.global_coverage is not None:
-        coverage = caches.global_coverage
-    elif caches and trade_date in caches.coverage_cache:
+    # ── Data coverage detection (per-day, not table-level) ──
+    # coverage_cache is pre-populated in batch by backtest/train commands
+    if caches and trade_date in caches.coverage_cache:
         coverage = caches.coverage_cache[trade_date]
     else:
         coverage = DataCoverage(

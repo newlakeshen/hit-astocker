@@ -157,23 +157,28 @@ def _cycle_gate(candidate: ScoredCandidate, cycle: SentimentCycle | None) -> Ris
     score = candidate.score
 
     if phase == CyclePhase.RETREAT:
-        # 退潮: 全面空仓, 除非绝对龙头 (>85分且是龙头型)
-        if sig_type == "SECTOR_LEADER" and score >= 85:
+        # 退潮: 全面空仓, 龙头/连板 75+ 可小仓参与
+        if sig_type in ("SECTOR_LEADER", "FOLLOW_BOARD") and score >= 75:
             return RiskLevel.HIGH
         return RiskLevel.NO_GO
 
     if phase == CyclePhase.ICE:
-        # 冰点: 只博龙头反包, 需极高确信
-        if sig_type == "SECTOR_LEADER" and score >= 80:
+        # 冰点: 龙头/连板 75+ 可博反包, score≥70 可轻仓试探
+        if sig_type in ("SECTOR_LEADER", "FOLLOW_BOARD") and score >= 75:
             return RiskLevel.HIGH
-        if sig_type == "FOLLOW_BOARD" and score >= 80:
+        if score >= 70:
             return RiskLevel.HIGH
         return RiskLevel.NO_GO
 
     if phase == CyclePhase.DIVERGE:
-        # 分歧: 首板全面禁止, 连板/龙头高门槛
+        # 分歧: 首板高分白名单 (核心因子同时极强时放行)
+        f = candidate.factors
         if sig_type == "FIRST_BOARD":
-            return RiskLevel.NO_GO
+            sq = f.get("seal_quality", 0)
+            th = f.get("theme_heat", 0)
+            if score >= 70 and sq >= 70 and th >= 70:
+                return RiskLevel.HIGH  # 高分+强封板+热题材 → QUARTER 仓位
+            return RiskLevel.NO_GO  # 其他首板仍然禁止
         if sig_type == "FOLLOW_BOARD":
             return RiskLevel.NO_GO if score < 75 else RiskLevel.HIGH
         if sig_type == "SECTOR_LEADER":
@@ -181,11 +186,11 @@ def _cycle_gate(candidate: ScoredCandidate, cycle: SentimentCycle | None) -> Ris
         return RiskLevel.NO_GO if score < 75 else RiskLevel.HIGH
 
     if phase == CyclePhase.REPAIR:
-        # 修复初期 (score_delta > 0): 仅允许高分龙头试探
+        # 修复初期 (score_delta > 0): 修复期是好入场时机, 放宽参与
         if cycle.score_delta > 0:
-            if sig_type == "SECTOR_LEADER" and score >= 80:
-                return RiskLevel.HIGH
-            return RiskLevel.NO_GO
+            if score >= 65:
+                return RiskLevel.MEDIUM
+            return RiskLevel.HIGH
         # 修复后期: 提高门槛, 轻仓试探
         return RiskLevel.HIGH if score < 60 else RiskLevel.MEDIUM
 

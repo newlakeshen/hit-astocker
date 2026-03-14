@@ -36,7 +36,8 @@ def _render_slice_table(title: str, slices: dict[str, SliceStats]) -> None:
 
     for key, stats in slices.items():
         pnl_style = "green" if stats.total_pnl > 0 else "red" if stats.total_pnl < 0 else ""
-        pl_str = f"{stats.profit_loss_ratio:.2f}" if stats.profit_loss_ratio != float("inf") else "∞"
+        inf = float("inf")
+        pl_str = f"{stats.profit_loss_ratio:.2f}" if stats.profit_loss_ratio != inf else "∞"
 
         table.add_row(
             key,
@@ -102,13 +103,24 @@ def diag(
         "AUCTION", "--mode", "-m", help="执行模式: AUCTION/WEAK_TO_STRONG/RE_SEAL"
     ),
     stop_loss: float = typer.Option(-7.0, "--stop-loss", help="止损线 (负数%)"),
-    take_profit: float = typer.Option(5.0, "--take-profit", help="止盈线 (正数%)"),
+    take_profit: float = typer.Option(8.0, "--take-profit", help="止盈线 (正数%)"),
     no_dynamic_stops: bool = typer.Option(False, "--no-dynamic-stops", help="禁用动态止损止盈"),
 ) -> None:
     """6维回测诊断: 按年份/周期/信号类型/出场/评分/赚钱效应切片分析。"""
+    from datetime import timedelta
+
     from hit_astocker.analyzers.backtest_engine import BacktestEngine
     from hit_astocker.models.backtest import BacktestConfig, ExecutionMode, TradeResult
-    from hit_astocker.models.daily_context import DailyContextCaches, build_daily_context
+    from hit_astocker.models.daily_context import (
+        DailyContextCaches,
+        DataCoverage,
+        build_daily_context,
+        table_has_data_for_date_batch,
+    )
+    from hit_astocker.repositories.hm_repo import HmRepository
+    from hit_astocker.repositories.kpl_repo import KplRepository
+    from hit_astocker.repositories.limit_repo import LimitListRepository
+    from hit_astocker.repositories.limit_step_repo import LimitStepRepository
     from hit_astocker.signals.signal_generator import SignalGenerator
     from hit_astocker.utils.date_utils import get_next_trading_day, get_trading_days_between
 
@@ -136,12 +148,50 @@ def diag(
 
         engine = BacktestEngine(conn)
         generator = SignalGenerator(conn, settings)
-        context_caches = DailyContextCaches()
+
+        trading_days = get_trading_days_between(start_date, end_date)
+
+        # ── Pre-warm: bulk preload for performance ──
+        preload_start = start_date - timedelta(days=20)
+        preload_end = end_date + timedelta(days=5)
+
+        limit_repo = LimitListRepository(conn)
+        limit_repo.preload_range(preload_start, preload_end)
+        step_repo = LimitStepRepository(conn)
+        step_repo.preload_range(preload_start, preload_end)
+        kpl_repo = KplRepository(conn)
+        kpl_repo.preload_range(preload_start, preload_end)
+        hm_repo = HmRepository(conn)
+
+        # Per-day coverage batch preload
+        ths_hot_dates = table_has_data_for_date_batch(conn, "ths_hot", trading_days)
+        hsgt_dates = table_has_data_for_date_batch(conn, "hsgt_top10", trading_days)
+        stk_factor_dates = table_has_data_for_date_batch(
+            conn, "stk_factor_pro", trading_days,
+        )
+        hm_dates = table_has_data_for_date_batch(conn, "hm_detail", trading_days)
+        auction_dates = table_has_data_for_date_batch(conn, "stk_auction", trading_days)
+        coverage_cache: dict[date, DataCoverage] = {}
+        for d_cov in trading_days:
+            coverage_cache[d_cov] = DataCoverage(
+                has_ths_hot=d_cov in ths_hot_dates,
+                has_hsgt=d_cov in hsgt_dates,
+                has_stk_factor=d_cov in stk_factor_dates,
+                has_hm=d_cov in hm_dates,
+                has_auction=d_cov in auction_dates,
+            )
+
+        context_caches = DailyContextCaches(
+            limit_repo=limit_repo,
+            step_repo=step_repo,
+            kpl_repo=kpl_repo,
+            hm_repo=hm_repo,
+            coverage_cache=coverage_cache,
+        )
 
         console.print(f"\n[bold]回测诊断[/] {start} -> {end}  mode={mode}\n")
 
         all_trades: list[TradeResult] = []
-        trading_days = get_trading_days_between(start_date, end_date)
 
         with console.status("[bold green]Running backtest diagnosis..."):
             for d in trading_days:
@@ -161,13 +211,20 @@ def diag(
                 if not signals:
                     continue
 
-                # Run simulation with market-regime adaptive stops
+                # Run simulation with market-regime adaptive stops + T+3
                 market_regime = None
                 mc = ctx.sentiment.market_context if ctx.sentiment else None
                 if mc:
                     market_regime = mc.market_regime
+                t3 = get_next_trading_day(t2)
+                cycle_phase = (
+                    ctx.sentiment_cycle.phase.value if ctx.sentiment_cycle else None
+                )
                 day_result = engine.simulate_day(
-                    signals, config, d, t1, t2, market_regime=market_regime,
+                    signals, config, d, t1, t2,
+                    exit_date_t3=t3,
+                    market_regime=market_regime,
+                    cycle_phase=cycle_phase,
                 )
 
                 # Post-hoc enrichment: fill cycle_phase/profit_regime via dataclasses.replace

@@ -45,6 +45,7 @@ def _make_ctx(profit_regime=None, cycle_phase=None):
         pe.regime_score = 40.0
         # Avoid _profit_effect_gate tier checks triggering
         pe.tier_for_height.return_value = None
+        pe.tier_for_height_by_type.return_value = None
         ctx.profit_effect = pe
     else:
         ctx.profit_effect = None
@@ -55,10 +56,10 @@ def _make_ctx(profit_regime=None, cycle_phase=None):
 
 
 def test_follow_board_height3_weak_low_survival_filtered():
-    """3板 + WEAK regime + survival=38 (<45) → should be filtered."""
+    """3板 + WEAK regime + survival=30 (<35) → should be filtered."""
     c = _make_candidate(
         signal_type="FOLLOW_BOARD",
-        survival=38.0,
+        survival=30.0,
         height_momentum=65.0,  # → height=3
         score=70.0,
     )
@@ -66,14 +67,14 @@ def test_follow_board_height3_weak_low_survival_filtered():
     reason = Stage1Filter._should_filter(c, ctx)
     assert reason is not None
     assert "弱赚钱效应连板门槛" in reason
-    assert "survival=38<45" in reason
+    assert "survival=30<35" in reason
 
 
 def test_follow_board_height3_weak_sufficient_survival_passes():
-    """3板 + WEAK regime + survival=50 (>=45) → should pass."""
+    """3板 + WEAK regime + survival=40 (>=35) → should pass."""
     c = _make_candidate(
         signal_type="FOLLOW_BOARD",
-        survival=50.0,
+        survival=40.0,
         height_momentum=65.0,  # → height=3
         score=70.0,
     )
@@ -82,11 +83,11 @@ def test_follow_board_height3_weak_sufficient_survival_passes():
     assert reason is None
 
 
-def test_follow_board_height4_weak_needs_60_filtered():
-    """4板 + WEAK regime + survival=55 (<60) → should be filtered."""
+def test_follow_board_height4_weak_needs_45_filtered():
+    """4板 + WEAK regime + survival=40 (<45) → should be filtered."""
     c = _make_candidate(
         signal_type="FOLLOW_BOARD",
-        survival=55.0,
+        survival=40.0,
         height_momentum=45.0,  # → height=4
         score=70.0,
     )
@@ -94,7 +95,7 @@ def test_follow_board_height4_weak_needs_60_filtered():
     reason = Stage1Filter._should_filter(c, ctx)
     assert reason is not None
     assert "弱赚钱效应连板门槛" in reason
-    assert "survival=55<60" in reason
+    assert "survival=40<45" in reason
 
 
 def test_follow_board_height3_strong_regime_no_tightening():
@@ -111,10 +112,10 @@ def test_follow_board_height3_strong_regime_no_tightening():
 
 
 def test_follow_board_height3_frozen_regime_filtered():
-    """3板 + FROZEN regime + survival=38 (<45) → should be filtered."""
+    """3板 + FROZEN regime + survival=30 (<35) → should be filtered."""
     c = _make_candidate(
         signal_type="FOLLOW_BOARD",
-        survival=38.0,
+        survival=30.0,
         height_momentum=65.0,  # → height=3
         score=70.0,
     )

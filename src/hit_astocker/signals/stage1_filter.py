@@ -101,15 +101,15 @@ class Stage1Filter:
             if not (c.signal_type == "SECTOR_LEADER" and c.score >= 85):
                 return f"退潮期 (score={c.score:.0f})"
 
-        # 3. 冰点期: 仅极高分标的可参与
+        # 3. 冰点期: 仅高分标的可参与 (放宽: 冰点整体分偏低)
         if cycle and cycle.phase == CyclePhase.ICE:
-            if c.score < 75:
+            if c.score < 65:
                 return f"冰点期 (score={c.score:.0f})"
 
-        # 4. 首板封板质量硬伤 (封板质量差 = 炸板概率高)
+        # 4. 首板封板质量硬伤 (stage1只滤明显差的, 边界案例留给Stage2)
         if c.signal_type == "FIRST_BOARD":
             sq = c.factors.get("seal_quality", 0)
-            if sq < 45:
+            if sq < 35:
                 return f"封板质量差 (seal_quality={sq:.0f})"
 
         # 4b. 赚钱效应分层门控 (数据驱动, 替代部分经验阈值)
@@ -127,22 +127,22 @@ class Stage1Filter:
             # 基础门槛: survival < 30 直接过滤
             if surv < 30:
                 return f"晋级率极低 (survival={surv:.0f})"
-            # 高位板递增门槛: 3板要求survival≥35, 4板≥45, 5板+≥55
+            # 高位板递增门槛 (与 fallback 值对齐, 避免自相矛盾)
             height = _infer_height(hm)
-            if height >= 5 and surv < 55:
-                return f"{height}板晋级率不足 (survival={surv:.0f}<55)"
-            if height >= 4 and surv < 45:
-                return f"{height}板晋级率不足 (survival={surv:.0f}<45)"
-            if height >= 3 and surv < 35:
+            if height >= 5 and surv < 35:
                 return f"{height}板晋级率不足 (survival={surv:.0f}<35)"
-            # 高度动量过低 = 累积衰减严重, 不值得参与
-            if hm < 15:
+            if height >= 4 and surv < 30:
+                return f"{height}板晋级率不足 (survival={surv:.0f}<30)"
+            if height >= 3 and surv < 25:
+                return f"{height}板晋级率不足 (survival={surv:.0f}<25)"
+            # 高度动量过低 = 真正衰竭才过滤
+            if hm < 10:
                 return f"连板动量衰竭 (height_momentum={hm:.0f})"
 
-            # 5b. 赚钱效应联动: 弱市下收紧连板门槛
+            # 5b. 赚钱效应联动: 弱市下收紧连板门槛 (减半二重过滤)
             pe = ctx.profit_effect
             if pe and pe.regime in (ProfitRegime.WEAK, ProfitRegime.FROZEN):
-                min_surv = 45 if height <= 3 else 60
+                min_surv = 35 if height <= 3 else 45
                 if surv < min_surv:
                     return (
                         f"弱赚钱效应连板门槛 "
@@ -152,6 +152,11 @@ class Stage1Filter:
         return None
 
 
+def _is_20cm_stock(ts_code: str) -> bool:
+    """判断是否为 20cm 涨跌幅股票 (创业板 300xxx / 科创板 688xxx)."""
+    return ts_code.startswith("300") or ts_code.startswith("688")
+
+
 def _profit_effect_gate(
     c: ScoredCandidate,
     pe: ProfitEffectSnapshot,
@@ -159,13 +164,18 @@ def _profit_effect_gate(
     """基于赚钱效应分层数据的门控.
 
     用实际次日溢价/胜率数据替代经验阈值:
-    - 首板层溢价 < -1% 且胜率 < 30% → 首板信号应回避
+    - 先按 10cm/20cm 分层查询, 样本不足时 fallback 到总体层
+    - 首板层溢价 < -2% 且胜率 < 35% → 首板信号应回避
     - 弱赚钱效应 + 首板中低分 → 过滤
     """
+    is_20cm = _is_20cm_stock(c.ts_code)
+
     if c.signal_type == "FIRST_BOARD":
-        tier = pe.tier_for_height(1)
+        # 优先按涨跌幅类型查询, fallback 到总体层
+        tier = pe.tier_for_height_by_type(1, is_20cm)
+        if tier is None or tier.prev_count < 5:
+            tier = pe.tier_for_height(1)
         if tier and tier.prev_count >= 5:
-            # 首板层数据充足时, 用实际溢价/胜率做硬门控
             if tier.avg_premium < -2.0 and tier.win_rate < 0.35:
                 return (
                     f"首板赚钱效应极差 "
@@ -174,7 +184,9 @@ def _profit_effect_gate(
 
     if c.signal_type == "FOLLOW_BOARD":
         height = _infer_height(c.factors.get("height_momentum", 0))
-        tier = pe.tier_for_height(height)
+        tier = pe.tier_for_height_by_type(height, is_20cm)
+        if tier is None or tier.prev_count < 3:
+            tier = pe.tier_for_height(height)
         if tier and tier.prev_count >= 3:
             if tier.avg_premium < -2.0 and tier.win_rate < 0.25 and c.score < 75:
                 return (
@@ -184,9 +196,11 @@ def _profit_effect_gate(
 
     if c.signal_type == "SECTOR_LEADER":
         height = _infer_height(c.factors.get("height_momentum", 0))
-        tier = pe.tier_for_height(height)
+        tier = pe.tier_for_height_by_type(height, is_20cm)
+        if tier is None or tier.prev_count < 3:
+            tier = pe.tier_for_height(height)
         if tier and tier.prev_count >= 3:
-            if hasattr(tier, 'broken_rate') and tier.broken_rate > 0.60:
+            if tier.broken_rate > 0.60:
                 return (
                     f"空间板炸板率过高 "
                     f"(broken_rate={tier.broken_rate:.0%})"

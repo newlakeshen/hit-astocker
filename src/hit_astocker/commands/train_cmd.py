@@ -134,10 +134,10 @@ def _collect_training_data(
     from hit_astocker.analyzers.backtest_engine import BacktestEngine
     from hit_astocker.models.backtest import BacktestConfig
     from hit_astocker.models.daily_context import (
-        DataCoverage,
         DailyContextCaches,
+        DataCoverage,
         build_daily_context,
-        table_has_data,
+        table_has_data_for_date_batch,
     )
     from hit_astocker.models.signal import RiskLevel, SignalType, TradingSignal
     from hit_astocker.repositories.kpl_repo import KplRepository
@@ -173,14 +173,23 @@ def _collect_training_data(
     kpl_repo = KplRepository(conn)
     kpl_repo.preload_range(preload_start, preload_end)
 
-    # Global coverage: tables either have data or don't (check once)
-    global_coverage = DataCoverage(
-        has_ths_hot=table_has_data(conn, "ths_hot"),
-        has_hsgt=table_has_data(conn, "hsgt_top10"),
-        has_stk_factor=table_has_data(conn, "stk_factor_pro"),
-        has_hm=table_has_data(conn, "hm_detail"),
-        has_auction=table_has_data(conn, "stk_auction"),
+    # Per-day coverage: batch-query which dates have data (5 SQLs, not 5*N)
+    ths_hot_dates = table_has_data_for_date_batch(conn, "ths_hot", trading_days)
+    hsgt_dates = table_has_data_for_date_batch(conn, "hsgt_top10", trading_days)
+    stk_factor_dates = table_has_data_for_date_batch(
+        conn, "stk_factor_pro", trading_days,
     )
+    hm_dates = table_has_data_for_date_batch(conn, "hm_detail", trading_days)
+    auction_dates = table_has_data_for_date_batch(conn, "stk_auction", trading_days)
+    coverage_cache: dict[date, DataCoverage] = {}
+    for td_cov in trading_days:
+        coverage_cache[td_cov] = DataCoverage(
+            has_ths_hot=td_cov in ths_hot_dates,
+            has_hsgt=td_cov in hsgt_dates,
+            has_stk_factor=td_cov in stk_factor_dates,
+            has_hm=td_cov in hm_dates,
+            has_auction=td_cov in auction_dates,
+        )
 
     from hit_astocker.repositories.hm_repo import HmRepository
     hm_repo = HmRepository(conn)
@@ -190,7 +199,7 @@ def _collect_training_data(
         step_repo=step_repo,
         kpl_repo=kpl_repo,
         hm_repo=hm_repo,
-        global_coverage=global_coverage,
+        coverage_cache=coverage_cache,
     )
 
     features: list[list[float]] = []

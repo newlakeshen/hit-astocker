@@ -68,6 +68,15 @@ class ProfitEffectSnapshot:
                 return t
         return None
 
+    def tier_for_height_by_type(self, height: int, is_20cm: bool) -> TierProfitEffect | None:
+        """按涨跌幅类型查询分层指标 (10cm 主板 / 20cm 创科板)."""
+        tier_name = _height_to_tier(height)
+        source = self.by_height_20cm if is_20cm else self.by_height_10cm
+        for t in source:
+            if t.tier == tier_name:
+                return t
+        return None
+
 
 # ── height → tier 映射 ──
 

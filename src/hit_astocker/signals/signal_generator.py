@@ -29,7 +29,7 @@ from hit_astocker.signals.risk_assessor import RiskAssessor
 from hit_astocker.signals.stage1_filter import Stage1Filter
 
 logger = logging.getLogger(__name__)
-_MIN_MODEL_AUC = 0.55
+_MIN_MODEL_AUC = 0.60
 
 
 class SignalGenerator:
@@ -48,17 +48,20 @@ class SignalGenerator:
         self._stage1_filter = Stage1Filter()
         self._llm_client = llm_client
         self._llm_cache = llm_cache
-        # Try to load ML ranking model
+        # Try to load ML ranking model (disabled by default, enable via settings)
         self._ranking_model = RankingModel()
-        model_path = Path(self._settings.db_path).parent / "ranking_model.pkl"
-        loaded = self._ranking_model.load(model_path)
-        self._use_ml = loaded and self._ranking_model.is_usable(_MIN_MODEL_AUC)
-        if self._use_ml:
-            logger.info("ML ranking model loaded — using two-stage pipeline")
-        elif loaded:
-            logger.warning(
-                "Ranking model loaded but disabled: validation below threshold or metadata missing"
-            )
+        self._use_ml = False
+        if self._settings.use_ml_model:
+            model_path = Path(self._settings.db_path).parent / "ranking_model.pkl"
+            loaded = self._ranking_model.load(model_path)
+            self._use_ml = loaded and self._ranking_model.is_usable(_MIN_MODEL_AUC)
+            if self._use_ml:
+                logger.info("ML ranking model loaded — using two-stage pipeline")
+            elif loaded:
+                logger.warning(
+                    "Ranking model loaded but disabled: AUC below %.2f threshold",
+                    _MIN_MODEL_AUC,
+                )
 
     # -- public API ----------------------------------------------------------
 
@@ -220,18 +223,32 @@ class SignalGenerator:
 
         profit_regime = ctx.profit_effect.regime.value if ctx.profit_effect else None
 
-        # ── 1. Dynamic score threshold ──
+        # ── 1. Dynamic score threshold + core factor express ──
         min_score = _dynamic_min_score(
             s.signal_min_score, ctx.sentiment, ctx.sentiment_cycle,
             profit_regime=profit_regime,
         )
-        signals = [sig for sig in signals if sig.composite_score >= min_score]
+        above = [sig for sig in signals if sig.composite_score >= min_score]
+        # 核心因子直通: 综合分略低但核心因子极强的票放行
+        below = [sig for sig in signals if sig.composite_score < min_score]
+        express = []
+        for sig in below:
+            # 不得低于 min_score - 10
+            if sig.composite_score < min_score - 10:
+                continue
+            if _core_factor_express(sig):
+                express.append(sig)
+                logger.info(
+                    "核心因子直通: %s (%s) score=%.0f < min=%.0f",
+                    sig.ts_code, sig.name, sig.composite_score, min_score,
+                )
+        signals = above + express
         if not signals:
             return signals
 
-        # ── 2. Per-theme concentration ──
+        # ── 2. Per-theme concentration (分层版: leader+follower 可双持) ──
         max_theme = s.signal_max_per_theme
-        theme_counts: dict[str, int] = {}
+        theme_signals: dict[str, list[TradingSignal]] = {}
         theme_filtered: list[TradingSignal] = []
         for sig in signals:
             key = sig.theme
@@ -239,14 +256,26 @@ class SignalGenerator:
                 # 无题材标记的信号不受题材限制
                 theme_filtered.append(sig)
                 continue
-            count = theme_counts.get(key, 0)
-            if count < max_theme:
+            existing = theme_signals.get(key, [])
+            if len(existing) < max_theme:
                 theme_filtered.append(sig)
-                theme_counts[key] = count + 1
+                existing.append(sig)
+                theme_signals[key] = existing
+            elif len(existing) == max_theme:
+                # 允许同题材 leader+follower 双持（板型多样化）
+                existing_types = {s_.signal_type.value for s_ in existing}
+                if sig.signal_type.value not in existing_types:
+                    theme_filtered.append(sig)
+                    existing.append(sig)
+                else:
+                    logger.debug(
+                        "题材集中度过滤: %s (%s) — 题材 '%s' 已达上限",
+                        sig.ts_code, sig.name, key,
+                    )
             else:
                 logger.debug(
-                    "题材集中度过滤: %s (%s) — 题材 '%s' 已达上限 %d",
-                    sig.ts_code, sig.name, key, max_theme,
+                    "题材集中度过滤: %s (%s) — 题材 '%s' 已达上限",
+                    sig.ts_code, sig.name, key,
                 )
         signals = theme_filtered
 
@@ -274,11 +303,20 @@ class SignalGenerator:
             _dynamic_top_k(profit_regime, cycle_phase, score_delta),
             s.signal_top_k,
         )
+        if effective_top_k <= 0:
+            return []
         if len(signals) > effective_top_k:
+            # 检查边界分差: 与 cutoff 分差 < 5 的额外信号可多放1只
+            cutoff = signals[effective_top_k - 1].composite_score
+            extended = [
+                sig for sig in signals[effective_top_k:]
+                if sig.composite_score >= cutoff - 5
+            ]
             logger.info(
-                "TopK 截断: %d → %d", len(signals), effective_top_k,
+                "TopK 截断: %d → %d (+%d 边界放行)",
+                len(signals), effective_top_k, min(len(extended), 1),
             )
-            signals = signals[:effective_top_k]
+            signals = signals[:effective_top_k] + extended[:1]
 
         return signals
 
@@ -390,6 +428,36 @@ class SignalGenerator:
 
 
 # ── Dynamic threshold ────────────────────────────────────────────────
+
+
+def _core_factor_express(sig: TradingSignal) -> bool:
+    """核心因子极强时允许绕过动态评分阈值 (直通通道).
+
+    按 signal_type 分层判定:
+    - FIRST_BOARD: 封板质量≥75 AND (竞价≥70 OR 题材热度≥75)
+    - FOLLOW_BOARD: 生存率≥60 AND 高度动能≥60
+    - SECTOR_LEADER: 题材热度≥80 AND 龙头地位≥85
+    """
+    f = sig.factors
+    sig_type = sig.signal_type.value
+
+    if sig_type == "FIRST_BOARD":
+        sq = f.get("seal_quality", 0)
+        aq = f.get("auction_quality", 0)
+        th = f.get("theme_heat", 0)
+        return sq >= 75 and (aq >= 70 or th >= 75)
+
+    if sig_type == "FOLLOW_BOARD":
+        surv = f.get("survival", 0)
+        hm = f.get("height_momentum", 0)
+        return surv >= 60 and hm >= 60
+
+    if sig_type == "SECTOR_LEADER":
+        th = f.get("theme_heat", 0)
+        lp = f.get("leader_position", 0)
+        return th >= 80 and lp >= 85
+
+    return False
 
 
 def _dynamic_min_score(

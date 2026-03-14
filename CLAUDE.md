@@ -60,20 +60,20 @@ Concurrency model:
   - `stock_sentiment.py` - Per-stock sentiment scoring (8因子: 量比/封单/竞价/题材/催化/人气/北向/技术)
   - `market_context.py` - Market index regime analysis (MA5/MA20 + regime scoring)
   - `signal_validator.py` - T+1 signal validation (legacy, simple close-vs-OHLC)
-  - `backtest_engine.py` - Realistic board-hitting backtest (3 execution modes + dynamic stop/target)
+  - `backtest_engine.py` - Realistic board-hitting backtest (3 execution modes + dynamic stop/target + T+3 持仓)
   - `backtest_diagnosis.py` - 6-dimensional backtest diagnosis (切片分析亏损来源)
   - `predictor.py` - Buy/sell prediction engine
   - `board_survival.py` - 连板生存率统计 (6-year historical P(N+1|N))
   - `technical_form.py` - 技术形态评分 (MACD/KDJ/RSI/BOLL)
   - `profit_effect.py` - 赚钱效应分层 (首板/2板/3板/空间板 × 10cm/20cm → STRONG/NORMAL/WEAK/FROZEN)
 - `signals/` - Two-stage signal generation pipeline:
-  - `stage1_filter.py` - Hard filter (ST排除/大盘暴跌/周期门控/质量硬伤/赚钱效应门控)
+  - `stage1_filter.py` - Hard filter (ST排除/大盘暴跌/周期门控/质量硬伤/赚钱效应门控/10cm-20cm分层)
   - `filters.py` - Candidate pre-filter (ST/BJ/市值排除)
   - `feature_builder.py` - 19-dim feature vector extraction (13 factor + 6 context)
   - `ranking_model.py` - ML ranking model (logistic/GBDT, sklearn)
-  - `composite_scorer.py` - 10-factor weighted scoring (rule-based fallback)
-  - `risk_assessor.py` - Cycle-aware risk gating + market regime thresholds
-  - `signal_generator.py` - Two-stage pipeline orchestrator
+  - `composite_scorer.py` - 10-factor weighted scoring (rule-based, default path)
+  - `risk_assessor.py` - Cycle-aware risk gating + market regime thresholds + DIVERGE白名单
+  - `signal_generator.py` - Two-stage pipeline orchestrator + 核心因子直通 + TopK分差放行
 - `fetchers/` - Tushare data sync (sync_orchestrator + 21 fetchers)
   - Includes: `ths_hot_fetcher.py`, `hsgt_fetcher.py`, `stk_factor_fetcher.py`, `trade_cal_fetcher.py`, `hm_fetcher.py`, `ann_fetcher.py`, `concept_fetcher.py`, `ths_member_fetcher.py`
 - `repositories/` - SQLite data access layer (17 repositories + base)
@@ -127,10 +127,11 @@ Removes candidates that should never be traded:
 - ST / BJ / 风险警示 (制度性排除)
 - 大盘暴跌 (上证 ≤ -3% 或 创业板 ≤ -4%)
 - 情绪极度低迷 (overall_score < 25)
-- 退潮期: 除绝对龙头(score≥85)外全部回避
-- 冰点期: score < 75 回避
-- 首板封板质量极差 (seal_quality < 25)
-- 连板生存率极低 (survival < 15)
+- 退潮期: 除龙头/连板(score≥85)外全部回避
+- 冰点期: score < 65 回避
+- 首板封板质量极差 (seal_quality < 35)
+- 连板生存率极低 (survival < 30, 高位板递增: 3板≥25/4板≥30/5板+≥35)
+- 赚钱效应门控: 按 10cm/20cm 分层查询, 样本不足时 fallback 到总体层
 
 ### Stage 2: Cross-Sectional Ranking
 **ML Model** (优先, 需先运行 `train` 命令):
@@ -140,10 +141,11 @@ Removes candidates that should never be traded:
 - 5折交叉验证 + AUC评估
 - predict_proba → 概率 × 100 = 综合评分 (0-100)
 
-**Rule-based fallback** (无模型时):
-- 10-factor weighted scoring (current composite_scorer.py)
+**Rule-based (default path, ML disabled by default via `Settings.use_ml_model`)**:
+- 10-factor weighted scoring (composite_scorer.py)
 - Cycle-aware weight adjustment
 - Dynamic weight redistribution for missing data
+- 核心因子直通通道: 综合分略低但核心因子极强的票放行 (min_score-10 保底)
 
 ### Feature Vector (19 dimensions):
 ```
@@ -177,7 +179,7 @@ Context features (6): cycle_phase (ordinal 0-5),
 
 ### Risk Assessment (Cycle + Regime):
 - Thresholds auto-adjust by market regime (STRONG_BULL → STRONG_BEAR)
-- **Cycle gating**: emotion phase overrides risk for signal types (e.g., DIVERGE blocks FIRST_BOARD)
+- **Cycle gating**: emotion phase overrides risk (DIVERGE: FIRST_BOARD白名单式放行, RETREAT/ICE: 75+可参与, REPAIR初期: 65+→MEDIUM)
 - Index-based kill conditions (大盘暴跌 → NO_GO)
 - 5 levels: LOW → FULL, MEDIUM → HALF, HIGH → QUARTER, EXTREME/NO_GO → ZERO
 
@@ -195,10 +197,18 @@ Context features (6): cycle_phase (ordinal 0-5),
 - Crowding penalty: >60% → -25pts, >50% → -18pts, >40% → -10pts (from heat_score)
 
 ### Dynamic Stops (per signal type):
-- FIRST_BOARD: 紧止损(-5%), 标准止盈 (弱转强失败快速回落)
-- FOLLOW_BOARD: 标准止损, 宽止盈(+8%) (连板有惯性)
-- SECTOR_LEADER: 标准止损, 最宽止盈(+10%) (龙头溢价最高)
+- FIRST_BOARD: 紧止损(-5%), 止盈+7% (弱转强失败快速回落)
+- FOLLOW_BOARD: 标准止损, 宽止盈+10% (连板有惯性)
+- SECTOR_LEADER: 标准止损, 最宽止盈+12% (龙头溢价最高)
+- 默认止盈 8%, 溢价上限 9%
+- 同 K 线止损+止盈均触发时取止盈 (先涨后跌概率更高)
 - Disabled via --no-dynamic-stops
+
+### Per-Type Holding Days:
+- FIRST_BOARD: T+1买 T+2卖 (默认1天)
+- FOLLOW_BOARD: 同上
+- SECTOR_LEADER: FERMENT/CLIMAX 周期可延长到 T+3 (hold_days=2)
+- T+2 触发止损→立即出 (protection first); T+2 CLOSE→继续持有到 T+3
 
 ### Board Survival Model:
 - Uses up to 6 years of historical limit_step data
@@ -223,7 +233,7 @@ Context features (6): cycle_phase (ordinal 0-5),
 - **HmRepository profiles cache**: `compute_trader_profiles()` SQL limits daily_bar scan to `relevant_codes` CTE (not full table). Profiles are cached and reused within 30-day windows (98% data overlap between adjacent days)
 - **SentimentCycleDetector light_metrics cache**: `light_metrics_cache: dict[date, _DayMetrics]` in `DailyContextCaches` eliminates 75% redundant lookback queries across consecutive days
 - **EventClassifier concept_members cache**: `concept_members_cache: dict[str, list[str]]` in `DailyContextCaches` eliminates N+1 concept membership queries (structural data, rarely changes)
-- **DataCoverage global_coverage**: `DailyContextCaches.global_coverage` checks table-level data availability once and reuses for all days (tables don't change mid-training/backtest)
+- **DataCoverage per-day**: `DailyContextCaches.coverage_cache` uses `table_has_data_for_date_batch()` to batch-query per-day coverage (5 SQL queries for entire range). Replaces old table-level `global_coverage` which incorrectly marked tables as available when only 2/1498 days had data
 
 ## Conventions
 

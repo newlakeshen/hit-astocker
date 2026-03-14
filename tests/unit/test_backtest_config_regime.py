@@ -8,9 +8,9 @@ def test_effective_stops_with_regime_strong_bull():
     config = BacktestConfig(stop_loss_pct=-7.0, take_profit_pct=5.0)
     stop, target = config.effective_stops_with_regime("FIRST_BOARD", "STRONG_BULL")
     # FIRST_BOARD: dynamic stop = max(-7, -5) = -5, then STRONG_BULL +1 = -4
-    # take = 5.0, then STRONG_BULL +2 = 7.0
+    # take = max(5.0, 7.0) = 7.0, then STRONG_BULL +2 = 9.0
     assert stop == -4.0
-    assert target == 7.0
+    assert target == 9.0
 
 
 def test_effective_stops_with_regime_bear():
@@ -18,9 +18,9 @@ def test_effective_stops_with_regime_bear():
     config = BacktestConfig(stop_loss_pct=-7.0, take_profit_pct=5.0)
     stop, target = config.effective_stops_with_regime("FIRST_BOARD", "BEAR")
     # FIRST_BOARD: -5, BEAR +1.5 = -3.5
-    # take = 5.0, BEAR -1 = 4.0
+    # take = max(5.0, 7.0) = 7.0, BEAR -1 = 6.0
     assert stop == -3.5
-    assert target == 4.0
+    assert target == 6.0
 
 
 def test_effective_stops_with_regime_none_defaults():
@@ -36,10 +36,10 @@ def test_effective_stops_with_regime_strong_bear():
     """STRONG_BEAR: most aggressive tightening."""
     config = BacktestConfig(stop_loss_pct=-7.0, take_profit_pct=5.0)
     stop, target = config.effective_stops_with_regime("SECTOR_LEADER", "STRONG_BEAR")
-    # SECTOR_LEADER: effective_stops -> stop=-7, take=max(5,10)=10
-    # STRONG_BEAR: stop=-7+2=-5, take=10+(-2)=8
+    # SECTOR_LEADER: effective_stops -> stop=-7, take=max(5,12)=12
+    # STRONG_BEAR: stop=-7+2=-5, take=12+(-2)=10
     assert stop == -5.0
-    assert target == 8.0
+    assert target == 10.0
 
 
 def test_effective_stops_with_regime_dynamic_stops_false():

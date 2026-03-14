@@ -128,9 +128,9 @@ def backtest(
         help="执行方式: AUCTION / WEAK_TO_STRONG / RE_SEAL",
     ),
     stop_loss: float = typer.Option(-7.0, "--stop-loss", help="止损线 (%%, 负数)"),
-    take_profit: float = typer.Option(5.0, "--take-profit", help="止盈线 (%%, 正数)"),
+    take_profit: float = typer.Option(8.0, "--take-profit", help="止盈线 (%%, 正数)"),
     slippage: float = typer.Option(10.0, "--slippage", help="滑点 (基点, 单边)"),
-    max_premium: float = typer.Option(7.0, "--max-premium", help="竞价溢价上限 (%%)"),
+    max_premium: float = typer.Option(9.0, "--max-premium", help="竞价溢价上限 (%%)"),
     no_dynamic_stops: bool = typer.Option(False, "--no-dynamic-stops", help="禁用动态止损止盈"),
     detail: bool = typer.Option(False, "--detail", help="显示逐笔明细"),
 ):
@@ -185,7 +185,10 @@ def backtest(
         # ── Pre-warm: bulk preload for performance ──
         from datetime import timedelta
 
-        from hit_astocker.models.daily_context import DataCoverage, table_has_data
+        from hit_astocker.models.daily_context import (
+            DataCoverage,
+            table_has_data_for_date_batch,
+        )
         from hit_astocker.repositories.hm_repo import HmRepository
         from hit_astocker.repositories.kpl_repo import KplRepository
         from hit_astocker.repositories.limit_repo import LimitListRepository
@@ -202,20 +205,30 @@ def backtest(
         kpl_repo.preload_range(preload_start, preload_end)
         hm_repo = HmRepository(conn)
 
-        global_cov = DataCoverage(
-            has_ths_hot=table_has_data(conn, "ths_hot"),
-            has_hsgt=table_has_data(conn, "hsgt_top10"),
-            has_stk_factor=table_has_data(conn, "stk_factor_pro"),
-            has_hm=table_has_data(conn, "hm_detail"),
-            has_auction=table_has_data(conn, "stk_auction"),
+        # Per-day coverage: batch-query which dates have data (5 SQLs, not 5*N)
+        ths_hot_dates = table_has_data_for_date_batch(conn, "ths_hot", trading_dates)
+        hsgt_dates = table_has_data_for_date_batch(conn, "hsgt_top10", trading_dates)
+        stk_factor_dates = table_has_data_for_date_batch(
+            conn, "stk_factor_pro", trading_dates,
         )
+        hm_dates = table_has_data_for_date_batch(conn, "hm_detail", trading_dates)
+        auction_dates = table_has_data_for_date_batch(conn, "stk_auction", trading_dates)
+        coverage_cache: dict[date, DataCoverage] = {}
+        for d in trading_dates:
+            coverage_cache[d] = DataCoverage(
+                has_ths_hot=d in ths_hot_dates,
+                has_hsgt=d in hsgt_dates,
+                has_stk_factor=d in stk_factor_dates,
+                has_hm=d in hm_dates,
+                has_auction=d in auction_dates,
+            )
 
         context_caches = DailyContextCaches(
             limit_repo=limit_repo,
             step_repo=step_repo,
             kpl_repo=kpl_repo,
             hm_repo=hm_repo,
-            global_coverage=global_cov,
+            coverage_cache=coverage_cache,
         )
 
         all_trades: list[TradeResult] = []
@@ -254,8 +267,15 @@ def backtest(
             mc = ctx.sentiment.market_context if ctx.sentiment else None
             if mc:
                 market_regime = mc.market_regime
+            t3 = get_next_trading_day(t2)
+            cycle_phase = (
+                ctx.sentiment_cycle.phase.value if ctx.sentiment_cycle else None
+            )
             day_result = engine.simulate_day(
-                signals, config, d, t1, t2, market_regime=market_regime,
+                signals, config, d, t1, t2,
+                exit_date_t3=t3,
+                market_regime=market_regime,
+                cycle_phase=cycle_phase,
             )
             all_trades.extend(day_result.trades)
             all_skipped.extend(day_result.skipped)
@@ -442,27 +462,6 @@ def _resolve_executable_signal_dates(
         executable.append(trade_date)
     return executable
 
-
-def _count_covered_dates(
-    conn: sqlite3.Connection,
-    table_name: str,
-    dates: list[date],
-    date_column: str,
-) -> int:
-    if not dates:
-        return 0
-
-    placeholders = ", ".join("?" for _ in dates)
-    sql = (
-        f"SELECT COUNT(DISTINCT [{date_column}]) FROM [{table_name}] "
-        f"WHERE [{date_column}] IN ({placeholders})"
-    )
-    rows = [to_tushare_date(d) for d in dates]
-    try:
-        result = conn.execute(sql, rows).fetchone()
-    except sqlite3.OperationalError:
-        return 0
-    return int(result[0] or 0) if result else 0
 
 
 def _render_range_coverage(coverage: BacktestRangeCoverage) -> None:

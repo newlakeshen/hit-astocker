@@ -51,15 +51,19 @@ class SkipReason(str, Enum):
 class BacktestConfig:
     execution_mode: ExecutionMode = ExecutionMode.AUCTION
     stop_loss_pct: float = -7.0
-    take_profit_pct: float = 5.0
+    take_profit_pct: float = 8.0
     # ── friction ──
     slippage_bps: float = 10.0              # 滑点 (基点), 单边
     commission_rate: float = 0.00025         # 佣金 (万2.5), 单边
     stamp_duty_rate: float = 0.0005          # 印花税 (千0.5), 仅卖出
-    max_open_premium_pct: float = 7.0        # 竞价溢价上限 (%), 超过不追
+    max_open_premium_pct: float = 9.0        # 竞价溢价上限 (%), 超过不追
     min_reseal_turnover: float = 3.0         # 回封最低换手率 (%), 低于则跳过
     # ── 动态止损/止盈 (按信号类型调整, 0=使用默认) ──
     dynamic_stops: bool = True              # 是否启用动态止损/止盈
+    # ── 持仓天数 (按信号类型) ──
+    hold_days_first_board: int = 1      # T+1买 T+2卖 (默认)
+    hold_days_follow_board: int = 1     # 同上
+    hold_days_sector_leader: int = 1    # 默认T+2, 可设为2 (T+3)
 
     def __post_init__(self) -> None:
         if self.stop_loss_pct >= 0:
@@ -71,24 +75,35 @@ class BacktestConfig:
         """Return (stop_loss_pct, take_profit_pct) adjusted by signal type.
 
         打板不同策略的止损逻辑不同:
-          首板弱转强: 止损紧(-5%), 弱转强失败通常快速回落
-          连板接力:   止盈宽(+8%), 连板股有惯性, 给空间
-          龙头空间:   止盈最宽(+10%), 龙头溢价最高
+          首板弱转强: 止损紧(-5%), 止盈 +7% (弱转强失败快速回落)
+          连板接力:   标准止损, 止盈 +10% (连板有惯性)
+          龙头空间:   标准止损, 止盈 +12% (龙头溢价最高)
         """
         if not self.dynamic_stops:
             return self.stop_loss_pct, self.take_profit_pct
 
         if signal_type == "FIRST_BOARD":
-            # 首板: 紧止损, 标准止盈
-            return max(self.stop_loss_pct, -5.0), self.take_profit_pct
+            # 首板: 紧止损, 适中止盈
+            return max(self.stop_loss_pct, -5.0), max(self.take_profit_pct, 7.0)
         if signal_type == "FOLLOW_BOARD":
             # 连板: 标准止损, 宽止盈
-            return self.stop_loss_pct, max(self.take_profit_pct, 8.0)
+            return self.stop_loss_pct, max(self.take_profit_pct, 10.0)
         if signal_type == "SECTOR_LEADER":
             # 龙头: 标准止损, 最宽止盈
-            return self.stop_loss_pct, max(self.take_profit_pct, 10.0)
+            return self.stop_loss_pct, max(self.take_profit_pct, 12.0)
 
         return self.stop_loss_pct, self.take_profit_pct
+
+    def effective_hold_days(self, signal_type: str, cycle_phase: str | None = None) -> int:
+        """按板型和周期返回持仓天数."""
+        if signal_type == "SECTOR_LEADER":
+            # FERMENT/早CLIMAX 龙头可以持到 T+3
+            if cycle_phase in ("FERMENT", "CLIMAX"):
+                return max(self.hold_days_sector_leader, 2)
+            return self.hold_days_sector_leader
+        if signal_type == "FOLLOW_BOARD":
+            return self.hold_days_follow_board
+        return self.hold_days_first_board
 
     def effective_stops_with_regime(
         self, signal_type: str, market_regime: str | None = None,

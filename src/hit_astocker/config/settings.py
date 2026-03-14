@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     # Board survival analysis
     survival_lookback_years: int = 6
 
+    # ML model control
+    use_ml_model: bool = False              # 默认不启用 ML 模型, 规则评分为主路径
+
     # API settings
     api_batch_size: int = 50
     api_timeout: int = 120

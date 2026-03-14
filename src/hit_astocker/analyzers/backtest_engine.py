@@ -16,7 +16,7 @@ Exit rules (T+2, priority order):
   3. open gaps through target → TAKE_PROFIT at open
   4. low touches stop        → STOP_LOSS at stop_price
   5. high touches target      → TAKE_PROFIT at target_price
-  6. both 4 & 5 on same bar  → STOP_LOSS (conservative)
+  6. both 4 & 5 on same bar  → TAKE_PROFIT (optimistic: 先涨后跌概率更高)
   7. default                  → CLOSE at T+2 close
 
 Friction applied to every trade:
@@ -25,7 +25,6 @@ Friction applied to every trade:
   - Stamp duty: rate * exit (sell-side only)
 """
 
-import math
 import sqlite3
 from collections.abc import Callable
 from datetime import date
@@ -37,8 +36,8 @@ from hit_astocker.models.backtest import (
     BucketStats,
     ExecutionMode,
     ExitReason,
-    SkipReason,
     SkippedSignal,
+    SkipReason,
     TradeResult,
 )
 from hit_astocker.models.daily_bar import DailyBar
@@ -86,9 +85,16 @@ class BacktestEngine:
         entry_date: date,
         exit_date: date,
         *,
+        exit_date_t3: date | None = None,
         market_regime: str | None = None,
+        cycle_phase: str | None = None,
     ) -> BacktestDayResult:
-        """Simulate trades: signals from *trade_date*, buy on *entry_date*, sell on *exit_date*."""
+        """Simulate trades: signals from *trade_date*, buy on *entry_date*, sell on *exit_date*.
+
+        When exit_date_t3 is provided and a signal's effective_hold_days == 2,
+        positions that would otherwise close at T+2 (CLOSE) are extended to T+3.
+        Stop loss on T+2 still triggers immediately (protection first).
+        """
         if not signals:
             return BacktestDayResult(trade_date=trade_date, trades=(), skipped=())
 
@@ -100,14 +106,27 @@ class BacktestEngine:
         t1_limits = self._get_limits(entry_date)
         t2_limits = self._get_limits(exit_date)
 
+        t3_bars: dict[str, DailyBar] | None = None
+        t3_limits: dict[str, LimitRecord] | None = None
+        if exit_date_t3:
+            t3_bars = self._get_bars(exit_date_t3)
+            t3_limits = self._get_limits(exit_date_t3)
+
         trades: list[TradeResult] = []
         skipped: list[SkippedSignal] = []
 
         for sig in signals:
+            hold_days = config.effective_hold_days(
+                sig.signal_type.value, cycle_phase,
+            )
             result = self._process_signal(
                 sig, config, trade_date, entry_date, exit_date,
                 t_bars, t1_bars, t2_bars, t1_limits, t2_limits,
                 market_regime=market_regime,
+                hold_days=hold_days,
+                exit_date_t3=exit_date_t3,
+                t3_bars=t3_bars,
+                t3_limits=t3_limits,
             )
             if isinstance(result, TradeResult):
                 trades.append(result)
@@ -136,6 +155,10 @@ class BacktestEngine:
         t2_limits: dict[str, LimitRecord],
         *,
         market_regime: str | None = None,
+        hold_days: int = 1,
+        exit_date_t3: date | None = None,
+        t3_bars: dict[str, DailyBar] | None = None,
+        t3_limits: dict[str, LimitRecord] | None = None,
     ) -> TradeResult | SkippedSignal:
         code = sig.ts_code
         t1_bar = t1_bars.get(code)
@@ -200,6 +223,22 @@ class BacktestEngine:
             eff_entry, t2_bar, t2_limit, config, eff_stop, eff_target,
         )
 
+        # ── T+3 延长持仓: T+2 未触发止损/止盈 → 继续持有到 T+3 ──
+        actual_exit_date = exit_date
+        if (
+            hold_days >= 2
+            and exit_reason == ExitReason.CLOSE.value
+            and exit_date_t3 is not None
+            and t3_bars is not None
+        ):
+            t3_bar = t3_bars.get(code)
+            t3_limit = t3_limits.get(code) if t3_limits else None
+            if t3_bar:
+                raw_exit, exit_reason = self._determine_exit(
+                    eff_entry, t3_bar, t3_limit, config, eff_stop, eff_target,
+                )
+                actual_exit_date = exit_date_t3
+
         # ── Apply slippage to exit ──
         eff_exit = raw_exit * (1 - slip)
 
@@ -221,7 +260,7 @@ class BacktestEngine:
         return TradeResult(
             trade_date=trade_date,
             entry_date=entry_date,
-            exit_date=exit_date,
+            exit_date=actual_exit_date,
             ts_code=code,
             name=sig.name,
             signal_type=sig.signal_type.value,
@@ -320,9 +359,9 @@ class BacktestEngine:
         stop_hit = t2_bar.low <= stop_price
         target_hit = t2_bar.high >= target_price
 
-        # 3. Both triggered: conservative → stop first
+        # 3. Both triggered on same bar → take profit (先涨后跌概率更高)
         if stop_hit and target_hit:
-            return stop_price, ExitReason.STOP_LOSS.value
+            return target_price, ExitReason.TAKE_PROFIT.value
 
         # 4. Only stop
         if stop_hit:
