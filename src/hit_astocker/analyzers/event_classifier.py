@@ -96,16 +96,21 @@ _CONCEPT_INDUSTRY_KEYWORDS = frozenset({
 
 
 class EventClassifier:
-    def __init__(self, conn: sqlite3.Connection, *, llm_client=None, llm_cache=None):
-        self._kpl_repo = KplRepository(conn)
+    def __init__(
+        self, conn: sqlite3.Connection, *, llm_client=None, llm_cache=None,
+        limit_repo=None, step_repo=None, kpl_repo=None,
+        concept_members_cache: dict[str, list[str]] | None = None,
+    ):
+        self._kpl_repo = kpl_repo or KplRepository(conn)
         self._ann_repo = AnnouncementRepository(conn)
         self._concept_repo = ConceptRepository(conn)
         self._ths_member_repo = ThsMemberRepository(conn)
-        self._step_repo = LimitStepRepository(conn)
-        self._limit_repo = LimitListRepository(conn)
+        self._step_repo = step_repo or LimitStepRepository(conn)
+        self._limit_repo = limit_repo or LimitListRepository(conn)
         self._conn = conn
         self._llm_client = llm_client
         self._llm_cache = llm_cache
+        self._concept_members_cache = concept_members_cache
 
     def analyze(self, trade_date: date) -> EventAnalysisResult:
         """Full event-driven analysis for a trading day (3-layer)."""
@@ -448,6 +453,21 @@ class EventClassifier:
         # If concept exists but doesn't match known categories → CONCEPT
         return EventType.CONCEPT
 
+    def _get_concept_members_cached(self, concept_name: str) -> list[str]:
+        """Get concept members with optional cross-day cache."""
+        if self._concept_members_cache is not None:
+            if concept_name in self._concept_members_cache:
+                return self._concept_members_cache[concept_name]
+
+        members = self._concept_repo.get_concept_members(concept_name)
+        if not members and self._ths_member_repo.has_data():
+            members = self._ths_member_repo.get_members_by_concept_name(concept_name)
+
+        if self._concept_members_cache is not None:
+            self._concept_members_cache[concept_name] = members or []
+
+        return members or []
+
     def _compute_diffusion(
         self,
         concepts: tuple[str, ...],
@@ -461,18 +481,7 @@ class EventClassifier:
         if not concepts:
             return 0.0
 
-        primary_concept = concepts[0]
-
-        # Try concept_detail first (Tushare own concept data)
-        members = self._concept_repo.get_concept_members(primary_concept)
-
-        # Fallback: ths_member (同花顺概念成分, keyed by concept index code)
-        # Looks up concept name → concept index code via ths_hot, then members
-        if not members and self._ths_member_repo.has_data():
-            members = self._ths_member_repo.get_members_by_concept_name(
-                primary_concept,
-            )
-
+        members = self._get_concept_members_cached(concepts[0])
         if not members:
             return 0.0
 
@@ -660,11 +669,7 @@ class EventClassifier:
         拥挤度 = 涨停股数 / 板块成分股总数
         高拥挤 (>50%) 意味着板块内大部分股票已涨停, 次日大概率分歧.
         """
-        # Try concept membership for sector size
-        members = self._concept_repo.get_concept_members(theme)
-        # Fallback to ths_member if concept_detail has no data
-        if not members and self._ths_member_repo.has_data():
-            members = self._ths_member_repo.get_members_by_concept_name(theme)
+        members = self._get_concept_members_cached(theme)
         if not members or len(members) < 3:
             # No concept data or too small → no penalty
             return 0.0, 0.0

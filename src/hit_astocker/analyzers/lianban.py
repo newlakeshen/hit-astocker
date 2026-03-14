@@ -15,8 +15,8 @@ from hit_astocker.utils.date_utils import get_previous_trading_day, get_recent_t
 
 
 class LianbanAnalyzer:
-    def __init__(self, conn: sqlite3.Connection):
-        self._step_repo = LimitStepRepository(conn)
+    def __init__(self, conn: sqlite3.Connection, *, step_repo=None):
+        self._step_repo = step_repo or LimitStepRepository(conn)
 
     def analyze(self, trade_date: date, trend_days: int = 10) -> LianbanResult:
         records = self._step_repo.find_records_by_date(trade_date)

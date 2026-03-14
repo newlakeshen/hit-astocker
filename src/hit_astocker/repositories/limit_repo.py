@@ -1,6 +1,14 @@
-"""Repository for limit_list_d data."""
+"""Repository for limit_list_d data.
+
+Supports optional per-date caching and bulk preloading for training performance.
+When ``preload_range()`` is called, all subsequent per-date queries use in-memory
+data instead of individual SQL queries.
+"""
+
+from __future__ import annotations
 
 import sqlite3
+from collections import defaultdict
 from datetime import date, datetime
 
 from hit_astocker.config.constants import TUSHARE_DATE_FMT
@@ -11,22 +19,73 @@ from hit_astocker.repositories.base import BaseRepository
 class LimitListRepository(BaseRepository):
     def __init__(self, conn: sqlite3.Connection):
         super().__init__(conn, "limit_list_d")
+        self._records_cache: dict[date, list[LimitRecord]] = {}
+        self._preloaded_range: tuple[date, date] | None = None
+
+    # ── Bulk preload ─────────────────────────────────────────────
+
+    def preload_range(self, start_date: date, end_date: date) -> None:
+        """Bulk load all records for *[start_date, end_date]* into memory.
+
+        After preloading, per-date queries within the range use in-memory data
+        and skip SQL entirely. Saves thousands of queries during training.
+        """
+        start_str = start_date.strftime(TUSHARE_DATE_FMT)
+        end_str = end_date.strftime(TUSHARE_DATE_FMT)
+        sql = (
+            "SELECT * FROM limit_list_d "
+            "WHERE trade_date >= ? AND trade_date <= ? "
+            "ORDER BY trade_date, ts_code"
+        )
+        rows = self._conn.execute(sql, (start_str, end_str)).fetchall()
+        by_date: dict[date, list[LimitRecord]] = defaultdict(list)
+        for row in rows:
+            record = self._to_model(row)
+            by_date[record.trade_date].append(record)
+        self._records_cache.update(by_date)
+        self._preloaded_range = (start_date, end_date)
+
+    def _in_preloaded_range(self, trade_date: date) -> bool:
+        if self._preloaded_range is None:
+            return False
+        return self._preloaded_range[0] <= trade_date <= self._preloaded_range[1]
+
+    # ── Core query (with cache) ──────────────────────────────────
 
     def find_records_by_date(self, trade_date: date) -> list[LimitRecord]:
+        if trade_date in self._records_cache:
+            return self._records_cache[trade_date]
+        if self._in_preloaded_range(trade_date):
+            return []  # preloaded range has no data for this date
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         rows = self.find_by_date(date_str)
-        return [self._to_model(r) for r in rows]
+        records = [self._to_model(r) for r in rows]
+        self._records_cache[trade_date] = records
+        return records
 
     def find_records_by_type(
-        self, trade_date: date, limit_type: LimitDirection
+        self, trade_date: date, limit_type: LimitDirection,
     ) -> list[LimitRecord]:
+        if trade_date in self._records_cache or self._in_preloaded_range(trade_date):
+            return [
+                r for r in self.find_records_by_date(trade_date)
+                if r.limit == limit_type
+            ]
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         sql = 'SELECT * FROM limit_list_d WHERE trade_date = ? AND "limit" = ?'
         rows = self._conn.execute(sql, (date_str, limit_type.value)).fetchall()
         return [self._to_model(r) for r in rows]
 
+    # ── Derived queries (cache-aware) ────────────────────────────
+
     def count_by_type(self, trade_date: date) -> dict[str, int]:
         """Count limit-up, limit-down, broken for a date."""
+        if trade_date in self._records_cache or self._in_preloaded_range(trade_date):
+            result = {"U": 0, "D": 0, "Z": 0}
+            for r in self.find_records_by_date(trade_date):
+                if r.limit.value in result:
+                    result[r.limit.value] += 1
+            return result
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         sql = """
             SELECT "limit", COUNT(*) as cnt
@@ -42,6 +101,14 @@ class LimitListRepository(BaseRepository):
 
     def find_first_board_stocks(self, trade_date: date) -> list[LimitRecord]:
         """Find stocks with their first limit-up (limit_times == 1)."""
+        if trade_date in self._records_cache or self._in_preloaded_range(trade_date):
+            return sorted(
+                [
+                    r for r in self.find_records_by_date(trade_date)
+                    if r.limit == LimitDirection.UP and r.limit_times == 1
+                ],
+                key=lambda r: r.first_time,
+            )
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         sql = """
             SELECT * FROM limit_list_d
@@ -53,6 +120,11 @@ class LimitListRepository(BaseRepository):
 
     def count_yizi(self, trade_date: date) -> int:
         """Count 一字板 (opened at limit-up, never broke)."""
+        if trade_date in self._records_cache or self._in_preloaded_range(trade_date):
+            return sum(
+                1 for r in self.find_records_by_date(trade_date)
+                if r.limit == LimitDirection.UP and r.open_times == 0
+            )
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         sql = """
             SELECT COUNT(*) FROM limit_list_d
@@ -68,6 +140,16 @@ class LimitListRepository(BaseRepository):
         炸板 = limit='Z' (broke and stayed broken).
         Returns (recovery_count, broken_count).
         """
+        if trade_date in self._records_cache or self._in_preloaded_range(trade_date):
+            records = self.find_records_by_date(trade_date)
+            recovery = sum(
+                1 for r in records
+                if r.limit == LimitDirection.UP and r.open_times > 0
+            )
+            broken = sum(
+                1 for r in records if r.limit == LimitDirection.BROKEN
+            )
+            return (recovery, broken)
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         sql = """
             SELECT
@@ -83,6 +165,15 @@ class LimitListRepository(BaseRepository):
 
         Returns {'10cm_up': N, '20cm_up': N, '10cm_broken': N, '20cm_broken': N}.
         """
+        if trade_date in self._records_cache or self._in_preloaded_range(trade_date):
+            result = {"10cm_up": 0, "20cm_up": 0, "10cm_broken": 0, "20cm_broken": 0}
+            for r in self.find_records_by_date(trade_date):
+                is_20cm = r.ts_code[:2] in ("30", "68")
+                if r.limit == LimitDirection.UP:
+                    result["20cm_up" if is_20cm else "10cm_up"] += 1
+                elif r.limit == LimitDirection.BROKEN:
+                    result["20cm_broken" if is_20cm else "10cm_broken"] += 1
+            return result
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         sql = """
             SELECT
@@ -106,6 +197,12 @@ class LimitListRepository(BaseRepository):
 
     def get_prev_limit_up_closes(self, trade_date: date) -> dict[str, float]:
         """Get {ts_code: close_price} for previous day's limit-up stocks."""
+        if trade_date in self._records_cache or self._in_preloaded_range(trade_date):
+            return {
+                r.ts_code: r.close
+                for r in self.find_records_by_date(trade_date)
+                if r.limit == LimitDirection.UP and r.close > 0
+            }
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         sql = """
             SELECT ts_code, "close" FROM limit_list_d

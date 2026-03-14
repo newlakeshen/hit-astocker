@@ -27,9 +27,12 @@ from hit_astocker.repositories.sector_repo import SectorRepository
 
 
 class FirstBoardAnalyzer:
-    def __init__(self, conn: sqlite3.Connection, settings: Settings | None = None):
-        self._limit_repo = LimitListRepository(conn)
-        self._kpl_repo = KplRepository(conn)
+    def __init__(
+        self, conn: sqlite3.Connection, settings: Settings | None = None,
+        *, limit_repo=None, kpl_repo=None,
+    ):
+        self._limit_repo = limit_repo or LimitListRepository(conn)
+        self._kpl_repo = kpl_repo or KplRepository(conn)
         self._sector_repo = SectorRepository(conn)
         self._settings = settings or get_settings()
 

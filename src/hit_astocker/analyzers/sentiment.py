@@ -28,9 +28,12 @@ from hit_astocker.utils.date_utils import get_previous_trading_day
 
 
 class SentimentAnalyzer:
-    def __init__(self, conn: sqlite3.Connection, settings: Settings | None = None):
-        self._limit_repo = LimitListRepository(conn)
-        self._step_repo = LimitStepRepository(conn)
+    def __init__(
+        self, conn: sqlite3.Connection, settings: Settings | None = None,
+        *, limit_repo=None, step_repo=None,
+    ):
+        self._limit_repo = limit_repo or LimitListRepository(conn)
+        self._step_repo = step_repo or LimitStepRepository(conn)
         self._bar_repo = DailyBarRepository(conn)
         self._auction_repo = AuctionRepository(conn)
         self._market_ctx_analyzer = MarketContextAnalyzer(conn)
@@ -56,11 +59,8 @@ class SentimentAnalyzer:
             sum(h * c for h, c in height_counts.items()) / max(total_lianban, 1)
         )
 
-        # 总晋级率
-        promotion_rate = self._compute_promotion_rate(trade_date)
-
-        # 高位晋级率 (2→3, 3→4)
-        promo_2to3, promo_3to4 = self._compute_height_promotion(trade_date)
+        # 总晋级率 + 高位晋级率 (deduplicated: single pair of stock_heights calls)
+        promotion_rate, promo_2to3, promo_3to4 = self._compute_all_promotions(trade_date)
 
         # 炸板修复率
         recovery_count, broken_stayed = self._limit_repo.count_recovery(trade_date)
@@ -190,41 +190,39 @@ class SentimentAnalyzer:
             market_context=market_ctx,
         )
 
-    def _compute_promotion_rate(self, trade_date: date) -> float:
-        """Compute promotion rate by tracking individual stocks."""
+    def _compute_all_promotions(self, trade_date: date) -> tuple[float, float, float]:
+        """Compute (总晋级率, 2→3晋级率, 3→4晋级率).
+
+        Merged from _compute_promotion_rate + _compute_height_promotion
+        to eliminate redundant get_stock_heights calls (was 4 SQL → now 2).
+        """
         prev_date = get_previous_trading_day(trade_date)
         if prev_date is None:
-            return 0.0
+            return 0.0, 0.0, 0.0
 
         yesterday_heights = self._step_repo.get_stock_heights(prev_date)
         if not yesterday_heights:
-            return 0.0
+            return 0.0, 0.0, 0.0
 
         today_heights = self._step_repo.get_stock_heights(trade_date)
+
+        # Overall promotion rate
         promoted = sum(
             1
             for code, prev_h in yesterday_heights.items()
             if today_heights.get(code) == prev_h + 1
         )
-        return promoted / len(yesterday_heights)
+        promotion_rate = promoted / len(yesterday_heights)
 
-    def _compute_height_promotion(self, trade_date: date) -> tuple[float, float]:
-        """Compute (2→3晋级率, 3→4晋级率)."""
-        prev_date = get_previous_trading_day(trade_date)
-        if prev_date is None:
-            return 0.0, 0.0
-
-        yesterday_heights = self._step_repo.get_stock_heights(prev_date)
-        today_heights = self._step_repo.get_stock_heights(trade_date)
-
+        # Height-specific promotions
         def _promo(from_h: int) -> float:
             candidates = [c for c, h in yesterday_heights.items() if h == from_h]
             if not candidates:
                 return 0.0
-            promoted = sum(1 for c in candidates if today_heights.get(c) == from_h + 1)
-            return promoted / len(candidates)
+            p = sum(1 for c in candidates if today_heights.get(c) == from_h + 1)
+            return p / len(candidates)
 
-        return _promo(2), _promo(3)
+        return promotion_rate, _promo(2), _promo(3)
 
     def _compute_prev_premium(self, trade_date: date) -> float:
         """Compute average premium of yesterday's limit-up stocks at today's open.

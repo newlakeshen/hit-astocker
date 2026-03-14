@@ -31,18 +31,35 @@ class _DayMetrics:
 class SentimentCycleDetector:
     """Detect current emotion-cycle phase from multi-day data."""
 
-    def __init__(self, conn: sqlite3.Connection):
-        self._limit_repo = LimitListRepository(conn)
-        self._step_repo = LimitStepRepository(conn)
+    def __init__(self, conn: sqlite3.Connection, *, limit_repo=None, step_repo=None):
+        self._limit_repo = limit_repo or LimitListRepository(conn)
+        self._step_repo = step_repo or LimitStepRepository(conn)
 
-    def detect(self, trade_date: date, current: SentimentScore) -> SentimentCycle:
-        """Detect cycle phase using today's full score + recent lightweight metrics."""
+    def detect(
+        self, trade_date: date, current: SentimentScore,
+        *, light_metrics_cache: dict[date, _DayMetrics] | None = None,
+    ) -> SentimentCycle:
+        """Detect cycle phase using today's full score + recent lightweight metrics.
+
+        Parameters
+        ----------
+        light_metrics_cache : optional dict
+            Shared cache across consecutive training days. When provided,
+            historical day metrics are stored/retrieved here, eliminating
+            ~75% redundant SQL queries across adjacent days.
+        """
         recent_days = get_recent_trading_days(trade_date, 4)  # T-1 … T-4
 
         # Collect metrics: today (index 0) + 4 historical days
         history: list[_DayMetrics] = []
         for d in recent_days:
-            history.append(self._compute_light_metrics(d))
+            if light_metrics_cache is not None and d in light_metrics_cache:
+                history.append(light_metrics_cache[d])
+            else:
+                metrics = self._compute_light_metrics(d)
+                if light_metrics_cache is not None:
+                    light_metrics_cache[d] = metrics
+                history.append(metrics)
 
         # Build score / broken_rate series (newest first)
         scores = [current.overall_score] + [m.score for m in history]

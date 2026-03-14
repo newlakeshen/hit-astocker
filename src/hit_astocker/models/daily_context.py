@@ -9,6 +9,7 @@ import logging
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date
+from typing import TYPE_CHECKING, Any
 
 from hit_astocker.analyzers.board_survival import SurvivalModel
 from hit_astocker.models.analysis_result import FirstBoardResult, LianbanResult, MoneyFlowResult
@@ -18,6 +19,12 @@ from hit_astocker.models.profit_effect import ProfitEffectSnapshot
 from hit_astocker.models.sector import SectorRotationResult
 from hit_astocker.models.sentiment import SentimentScore
 from hit_astocker.models.sentiment_cycle import SentimentCycle
+
+if TYPE_CHECKING:
+    from hit_astocker.repositories.hm_repo import HmRepository
+    from hit_astocker.repositories.kpl_repo import KplRepository
+    from hit_astocker.repositories.limit_repo import LimitListRepository
+    from hit_astocker.repositories.limit_step_repo import LimitStepRepository
 
 
 @dataclass(frozen=True)
@@ -87,10 +94,26 @@ class DailyAnalysisContext:
 
 @dataclass
 class DailyContextCaches:
-    """Reusable caches for multi-day context building."""
+    """Reusable caches for multi-day context building.
+
+    Performance fields (populated before training loop):
+    - limit_repo / step_repo / kpl_repo: shared pre-loaded repo instances
+    - global_coverage: single coverage check (tables don't change mid-training)
+    - light_metrics_cache: SentimentCycleDetector lookback metrics (3/4 overlap)
+    - concept_members_cache: concept membership (structural, rarely changes)
+    """
 
     survival_models: dict[tuple[date, int], SurvivalModel] = field(default_factory=dict)
     coverage_cache: dict[date, DataCoverage] = field(default_factory=dict)
+
+    # ── Training performance caches ──
+    limit_repo: LimitListRepository | None = None
+    step_repo: LimitStepRepository | None = None
+    kpl_repo: KplRepository | None = None
+    global_coverage: DataCoverage | None = None
+    hm_repo: HmRepository | None = None
+    light_metrics_cache: dict[date, Any] = field(default_factory=dict)
+    concept_members_cache: dict[str, list[str]] = field(default_factory=dict)
 
 
 def table_has_data(conn: sqlite3.Connection, table: str) -> bool:
@@ -161,9 +184,20 @@ def build_daily_context(
     from hit_astocker.analyzers.sentiment import SentimentAnalyzer
     from hit_astocker.analyzers.stock_sentiment import StockSentimentAnalyzer
     from hit_astocker.repositories.hsgt_repo import HsgtTop10Repository
+    from hit_astocker.repositories.kpl_repo import KplRepository as _KplRepo
+    from hit_astocker.repositories.limit_repo import LimitListRepository as _LimitRepo
+    from hit_astocker.repositories.limit_step_repo import LimitStepRepository as _StepRepo
 
-    # ── Data coverage detection (cached across days in backtest) ──
-    if caches and trade_date in caches.coverage_cache:
+    # ── Shared repos (use pre-loaded when available) ──
+    limit_repo = caches.limit_repo if caches and caches.limit_repo else _LimitRepo(conn)
+    step_repo = caches.step_repo if caches and caches.step_repo else _StepRepo(conn)
+    kpl_repo = caches.kpl_repo if caches and caches.kpl_repo else _KplRepo(conn)
+
+    # ── Data coverage detection ──
+    # Use global coverage (table-level, invariant during training) if available
+    if caches and caches.global_coverage is not None:
+        coverage = caches.global_coverage
+    elif caches and trade_date in caches.coverage_cache:
         coverage = caches.coverage_cache[trade_date]
     else:
         coverage = DataCoverage(
@@ -177,11 +211,16 @@ def build_daily_context(
             caches.coverage_cache[trade_date] = coverage
 
     # Phase 1: independent analyzers (+ cycle detection + profit effect)
-    sentiment = SentimentAnalyzer(conn, settings).analyze(trade_date)
+    sentiment = SentimentAnalyzer(
+        conn, settings, limit_repo=limit_repo, step_repo=step_repo,
+    ).analyze(trade_date)
 
     from hit_astocker.analyzers.sentiment_cycle import SentimentCycleDetector
     try:
-        sentiment_cycle = SentimentCycleDetector(conn).detect(trade_date, sentiment)
+        _metrics_cache = caches.light_metrics_cache if caches else None
+        sentiment_cycle = SentimentCycleDetector(
+            conn, limit_repo=limit_repo, step_repo=step_repo,
+        ).detect(trade_date, sentiment, light_metrics_cache=_metrics_cache)
     except Exception:
         logging.getLogger(__name__).warning(
             "SentimentCycleDetector failed for %s", trade_date, exc_info=True,
@@ -196,11 +235,19 @@ def build_daily_context(
             "ProfitEffectAnalyzer failed for %s", trade_date, exc_info=True,
         )
         profit_effect = None
-    firstboard = FirstBoardAnalyzer(conn, settings).analyze(trade_date)
-    lianban = LianbanAnalyzer(conn).analyze(trade_date)
+    firstboard = FirstBoardAnalyzer(
+        conn, settings, limit_repo=limit_repo, kpl_repo=kpl_repo,
+    ).analyze(trade_date)
+    lianban = LianbanAnalyzer(conn, step_repo=step_repo).analyze(trade_date)
     sector = SectorRotationAnalyzer(conn).analyze(trade_date)
-    dragon = DragonTigerAnalyzer(conn).analyze(trade_date)
-    event = EventClassifier(conn, llm_client=llm_client, llm_cache=llm_cache).analyze(trade_date)
+    _hm_repo = caches.hm_repo if caches and caches.hm_repo else None
+    dragon = DragonTigerAnalyzer(conn, hm_repo=_hm_repo).analyze(trade_date)
+    _concept_cache = caches.concept_members_cache if caches else None
+    event = EventClassifier(
+        conn, llm_client=llm_client, llm_cache=llm_cache,
+        limit_repo=limit_repo, step_repo=step_repo, kpl_repo=kpl_repo,
+        concept_members_cache=_concept_cache,
+    ).analyze(trade_date)
     lookback_years = getattr(settings, "survival_lookback_years", 6)
     survival_key = (trade_date, lookback_years)
     survival_model = caches.survival_models.get(survival_key) if caches else None

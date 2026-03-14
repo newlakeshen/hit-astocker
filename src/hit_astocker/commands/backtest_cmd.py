@@ -179,13 +179,48 @@ def backtest(
 
         generator = SignalGenerator(conn, settings)
         engine = BacktestEngine(conn)
-        context_caches = DailyContextCaches()
+
+        trading_dates = get_trading_days_between(start_date, end_date)
+
+        # ── Pre-warm: bulk preload for performance ──
+        from datetime import timedelta
+
+        from hit_astocker.models.daily_context import DataCoverage, table_has_data
+        from hit_astocker.repositories.hm_repo import HmRepository
+        from hit_astocker.repositories.kpl_repo import KplRepository
+        from hit_astocker.repositories.limit_repo import LimitListRepository
+        from hit_astocker.repositories.limit_step_repo import LimitStepRepository
+
+        preload_start = start_date - timedelta(days=20)
+        preload_end = end_date + timedelta(days=5)
+
+        limit_repo = LimitListRepository(conn)
+        limit_repo.preload_range(preload_start, preload_end)
+        step_repo = LimitStepRepository(conn)
+        step_repo.preload_range(preload_start, preload_end)
+        kpl_repo = KplRepository(conn)
+        kpl_repo.preload_range(preload_start, preload_end)
+        hm_repo = HmRepository(conn)
+
+        global_cov = DataCoverage(
+            has_ths_hot=table_has_data(conn, "ths_hot"),
+            has_hsgt=table_has_data(conn, "hsgt_top10"),
+            has_stk_factor=table_has_data(conn, "stk_factor_pro"),
+            has_hm=table_has_data(conn, "hm_detail"),
+            has_auction=table_has_data(conn, "stk_auction"),
+        )
+
+        context_caches = DailyContextCaches(
+            limit_repo=limit_repo,
+            step_repo=step_repo,
+            kpl_repo=kpl_repo,
+            hm_repo=hm_repo,
+            global_coverage=global_cov,
+        )
 
         all_trades: list[TradeResult] = []
         all_skipped: list[SkippedSignal] = []
         total_signals = 0
-
-        trading_dates = get_trading_days_between(start_date, end_date)
         range_coverage = _collect_range_coverage(conn, trading_dates)
 
         for d in trading_dates:

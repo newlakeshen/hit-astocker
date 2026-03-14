@@ -124,11 +124,25 @@ def _collect_training_data(
       1. Compute factors for all candidates
       2. Apply the same Stage1/risk gating used in live signal generation
       3. Simulate the default executable trade and use realized PnL as label
+
+    Performance: pre-loads limit_list_d/limit_step/kpl_list data for the full
+    date range in 3 bulk SQL queries, then all per-day lookups use in-memory
+    data. This eliminates ~80% of individual SQL queries.
     """
+    import time
+
     from hit_astocker.analyzers.backtest_engine import BacktestEngine
     from hit_astocker.models.backtest import BacktestConfig
-    from hit_astocker.models.daily_context import DailyContextCaches, build_daily_context
+    from hit_astocker.models.daily_context import (
+        DataCoverage,
+        DailyContextCaches,
+        build_daily_context,
+        table_has_data,
+    )
     from hit_astocker.models.signal import RiskLevel, SignalType, TradingSignal
+    from hit_astocker.repositories.kpl_repo import KplRepository
+    from hit_astocker.repositories.limit_repo import LimitListRepository
+    from hit_astocker.repositories.limit_step_repo import LimitStepRepository
     from hit_astocker.signals.composite_scorer import CompositeScorer
     from hit_astocker.signals.feature_builder import build_feature_vector
     from hit_astocker.signals.risk_assessor import RiskAssessor
@@ -140,9 +154,45 @@ def _collect_training_data(
     stage1_filter = Stage1Filter()
     risk_assessor = RiskAssessor()
     config = BacktestConfig()
-    context_caches = DailyContextCaches()
 
     trading_days = get_trading_days_between(start_date, end_date)
+
+    # ── Pre-warm: bulk preload repos for entire training range ──
+    from datetime import timedelta
+
+    preload_start = start_date - timedelta(days=20)  # lookback buffer
+    preload_end = end_date + timedelta(days=5)  # T+2 exit buffer
+    console.print("  预加载数据...")
+
+    limit_repo = LimitListRepository(conn)
+    limit_repo.preload_range(preload_start, preload_end)
+
+    step_repo = LimitStepRepository(conn)
+    step_repo.preload_range(preload_start, preload_end)
+
+    kpl_repo = KplRepository(conn)
+    kpl_repo.preload_range(preload_start, preload_end)
+
+    # Global coverage: tables either have data or don't (check once)
+    global_coverage = DataCoverage(
+        has_ths_hot=table_has_data(conn, "ths_hot"),
+        has_hsgt=table_has_data(conn, "hsgt_top10"),
+        has_stk_factor=table_has_data(conn, "stk_factor_pro"),
+        has_hm=table_has_data(conn, "hm_detail"),
+        has_auction=table_has_data(conn, "stk_auction"),
+    )
+
+    from hit_astocker.repositories.hm_repo import HmRepository
+    hm_repo = HmRepository(conn)
+
+    context_caches = DailyContextCaches(
+        limit_repo=limit_repo,
+        step_repo=step_repo,
+        kpl_repo=kpl_repo,
+        hm_repo=hm_repo,
+        global_coverage=global_coverage,
+    )
+
     features: list[list[float]] = []
     labels: list[int] = []
     meta = {
@@ -152,11 +202,20 @@ def _collect_training_data(
         "signals_skipped": 0,
         "total_days": len(trading_days),
     }
+    loop_start = time.monotonic()
 
     with console.status("  收集训练数据...") as status:
         for i, td in enumerate(trading_days):
+            # ETA display
+            elapsed = time.monotonic() - loop_start
+            if i > 0 and elapsed > 0:
+                rate = i / elapsed
+                eta = (len(trading_days) - i) / rate
+                eta_str = f" ETA {eta:.0f}s"
+            else:
+                eta_str = ""
             status.update(
-                f"  收集训练数据... [{i + 1}/{len(trading_days)}] {td}"
+                f"  收集训练数据... [{i + 1}/{len(trading_days)}] {td}{eta_str}"
             )
             try:
                 next_td = get_next_trading_day(td)

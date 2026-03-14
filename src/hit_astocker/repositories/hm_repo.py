@@ -19,15 +19,23 @@ from hit_astocker.utils.date_utils import get_recent_trading_days
 class HmRepository(BaseRepository):
     def __init__(self, conn: sqlite3.Connection):
         super().__init__(conn, "hm_detail")
+        self._has_data_cache: bool | None = None
+        self._profiles_cache: dict[date, dict[str, TraderProfile]] = {}
 
     # ── basic queries ────────────────────────────────────────────────────
 
     def has_data(self) -> bool:
-        """Check if hm_detail has any data at all."""
-        row = self._conn.execute(
-            "SELECT COUNT(*) FROM hm_detail LIMIT 1"
-        ).fetchone()
-        return row[0] > 0
+        """Check if hm_detail has any data at all (cached)."""
+        if self._has_data_cache is not None:
+            return self._has_data_cache
+        try:
+            row = self._conn.execute(
+                "SELECT 1 FROM hm_detail LIMIT 1"
+            ).fetchone()
+            self._has_data_cache = row is not None
+        except Exception:
+            self._has_data_cache = False
+        return self._has_data_cache
 
     def find_details_by_date(self, trade_date: date) -> list[HmDetailRecord]:
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
@@ -47,16 +55,32 @@ class HmRepository(BaseRepository):
         Uses hm_detail (net_amount > 0 = buy) joined with daily_bar
         LEAD() window to get next-day pct_chg.
 
+        Performance: daily_bar scan is limited to ts_codes from hm_detail
+        only (was scanning entire table before). Also cached across days
+        since 60-day lookback has 98% overlap between adjacent days.
+
         Returns {hm_name: TraderProfile}.
         """
+        # Cache: profiles barely change day-to-day (59/60 overlap).
+        # Reuse cached profiles if computed within last 20 trading days.
+        if trade_date in self._profiles_cache:
+            return self._profiles_cache[trade_date]
+        for cached_date, cached_profiles in self._profiles_cache.items():
+            days_diff = abs((trade_date - cached_date).days)
+            if days_diff <= 30:  # ~20 trading days
+                self._profiles_cache[trade_date] = cached_profiles
+                return cached_profiles
+
         recent_dates = get_recent_trading_days(trade_date, lookback_days)
         if not recent_dates:
             return {}
 
         start_str = recent_dates[-1].strftime(TUSHARE_DATE_FMT)
-        # Extend end by a few days so LEAD() can see the next trading day
         end_str = trade_date.strftime(TUSHARE_DATE_FMT)
 
+        # Optimized: limit daily_bar scan to only ts_codes that appear in
+        # hm_detail, instead of scanning ALL stocks. This reduces the LEAD()
+        # window from millions of rows to thousands.
         sql = """
             WITH trader_buys AS (
                 SELECT hm_name, ts_code, trade_date
@@ -64,15 +88,19 @@ class HmRepository(BaseRepository):
                 WHERE trade_date >= ? AND trade_date <= ?
                   AND net_amount > 0
             ),
+            relevant_codes AS (
+                SELECT DISTINCT ts_code FROM trader_buys
+            ),
             daily_with_next AS (
                 SELECT
-                    ts_code,
-                    trade_date,
-                    LEAD(pct_chg) OVER (
-                        PARTITION BY ts_code ORDER BY trade_date
+                    d.ts_code,
+                    d.trade_date,
+                    LEAD(d.pct_chg) OVER (
+                        PARTITION BY d.ts_code ORDER BY d.trade_date
                     ) AS next_pct
-                FROM daily_bar
-                WHERE trade_date >= ?
+                FROM daily_bar d
+                INNER JOIN relevant_codes rc ON d.ts_code = rc.ts_code
+                WHERE d.trade_date >= ?
             )
             SELECT
                 tb.hm_name,
@@ -99,6 +127,8 @@ class HmRepository(BaseRepository):
                 avg_premium=r["avg_premium"] or 0.0,
                 active_days=r["active_days"] or 0,
             )
+
+        self._profiles_cache[trade_date] = profiles
         return profiles
 
     # ── per-stock seat scores ────────────────────────────────────────────

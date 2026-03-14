@@ -24,10 +24,10 @@ from hit_astocker.repositories.hm_repo import HmRepository
 
 
 class DragonTigerAnalyzer:
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: sqlite3.Connection, *, hm_repo: HmRepository | None = None):
         self._dt_repo = DragonTigerRepository(conn)
         self._inst_repo = InstitutionalTradeRepository(conn)
-        self._hm_repo = HmRepository(conn)
+        self._hm_repo = hm_repo or HmRepository(conn)
 
     def analyze(self, trade_date: date) -> DragonTigerResult:
         records = self._dt_repo.find_records_by_date(trade_date)

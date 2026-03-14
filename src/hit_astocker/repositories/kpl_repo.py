@@ -34,6 +34,33 @@ class KplRepository(BaseRepository):
 
     def __init__(self, conn: sqlite3.Connection):
         super().__init__(conn, "kpl_list")
+        self._tag_cache: dict[tuple[date, str], list[KplRecord]] = {}
+        self._themes_cache: dict[date, dict[str, int]] = {}
+        self._preloaded_range: tuple[date, date] | None = None
+
+    def preload_range(self, start_date: date, end_date: date) -> None:
+        """Bulk load kpl_list records for a date range into memory cache."""
+        from collections import defaultdict as _ddict
+
+        start_str = start_date.strftime(TUSHARE_DATE_FMT)
+        end_str = end_date.strftime(TUSHARE_DATE_FMT)
+        sql = (
+            f"SELECT * FROM kpl_list "
+            f"WHERE trade_date >= ? AND trade_date <= ? {self._EXCLUDE_ST} "
+            f"ORDER BY trade_date, ts_code"
+        )
+        rows = self._conn.execute(sql, (start_str, end_str)).fetchall()
+        by_date_tag: dict[tuple[date, str], list[KplRecord]] = _ddict(list)
+        for row in rows:
+            rec = self._to_model(row)
+            by_date_tag[(rec.trade_date, rec.tag)].append(rec)
+        self._tag_cache.update(by_date_tag)
+        self._preloaded_range = (start_date, end_date)
+
+    def _in_preloaded_range(self, trade_date: date) -> bool:
+        if self._preloaded_range is None:
+            return False
+        return self._preloaded_range[0] <= trade_date <= self._preloaded_range[1]
 
     def find_records_by_date(self, trade_date: date) -> list[KplRecord]:
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
@@ -41,13 +68,34 @@ class KplRepository(BaseRepository):
         return [self._to_model(r) for r in rows]
 
     def find_by_tag(self, trade_date: date, tag: str = "涨停") -> list[KplRecord]:
+        cache_key = (trade_date, tag)
+        if cache_key in self._tag_cache:
+            return self._tag_cache[cache_key]
+        if self._in_preloaded_range(trade_date):
+            return []
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         sql = f"SELECT * FROM kpl_list WHERE trade_date = ? AND tag = ? {self._EXCLUDE_ST}"
         rows = self._conn.execute(sql, (date_str, tag)).fetchall()
-        return [self._to_model(r) for r in rows]
+        records = [self._to_model(r) for r in rows]
+        self._tag_cache[cache_key] = records
+        return records
 
     def get_themes_by_date(self, trade_date: date) -> dict[str, int]:
         """Get per-theme stock counts for a date (themes are split, ST excluded)."""
+        if trade_date in self._themes_cache:
+            return self._themes_cache[trade_date]
+        # Try to derive from tag cache if available
+        cache_key = (trade_date, "涨停")
+        if cache_key in self._tag_cache or self._in_preloaded_range(trade_date):
+            records = self.find_by_tag(trade_date, "涨停")
+            counts: dict[str, int] = defaultdict(int)
+            for rec in records:
+                if rec.theme:
+                    for t in split_themes(rec.theme):
+                        counts[t] += 1
+            result = dict(counts)
+            self._themes_cache[trade_date] = result
+            return result
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         sql = f"""
             SELECT theme FROM kpl_list
@@ -55,11 +103,13 @@ class KplRepository(BaseRepository):
             {self._EXCLUDE_ST}
         """
         rows = self._conn.execute(sql, (date_str,)).fetchall()
-        counts: dict[str, int] = defaultdict(int)
+        counts = defaultdict(int)
         for r in rows:
             for t in split_themes(r["theme"]):
                 counts[t] += 1
-        return dict(counts)
+        result = dict(counts)
+        self._themes_cache[trade_date] = result
+        return result
 
     def get_themes_by_dates(self, trade_dates: list[date]) -> dict[str, int]:
         """Get theme day-counts across multiple dates (themes are split, ST excluded).
