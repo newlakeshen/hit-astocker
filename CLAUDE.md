@@ -8,6 +8,7 @@ A股打板量化分析系统 (A-Share Limit-Up Board Hitting Quantitative Analys
 - Available APIs include but are not limited to: `limit_list_d`, `limit_step`, `limit_cpt_list`, `kpl_list`, `top_list`, `top_inst`, `moneyflow_ths`, `moneyflow_detail`, `daily_bar`, `index_daily`, `hsgt_top10`, `margin_detail`, `stk_factor_pro`, `cyq_perf`, `moneyflow_ind`, `concept_detail`, `ths_member`, `stk_mins`, `ths_hot`, `stk_surv`, `anns_d`
 - **Active data APIs** (synced by orchestrator): `limit_list_d`, `limit_step`, `limit_cpt_list`, `kpl_list`, `top_list`, `top_inst`, `moneyflow_ths`, `moneyflow_detail`, `daily_bar`, `index_daily`, `ths_hot`, `hsgt_top10`
 - `stk_factor_pro` is fetched on-demand per stock (not in bulk sync)
+- `anns_d` supports date range queries (`start_date/end_date`) for batch sync
 - Tushare token is stored in `.env` file
 - Rate limit: 200 calls/minute (configurable)
 - Supports 6-year historical data range for statistical models
@@ -42,7 +43,7 @@ CLI (Typer) -> Commands -> Analyzers -> Repositories -> SQLite (WAL mode)
 Concurrency model:
 - SQLite in WAL mode; single connection per command (no check_same_thread)
 - SignalGenerator: Stage1 filter → Stage2 rank (ML or rules) → risk assess
-- SyncOrchestrator: parallel HTTP fetches (4 workers) → sequential DB writes
+- SyncOrchestrator: parallel HTTP fetches (4 workers) → sequential DB writes → failed chunks auto-retry (max 2 rounds)
 - daily_cmd / signal_cmd: sequential analyzers (single SQLite connection, not thread-safe)
 ```
 
@@ -117,7 +118,7 @@ pip install -e '.[dev,ml]'           # Install with dev + ML dependencies
 pip install -e '.[dev,ml,llm]'       # Include LLM integration (OpenAI)
 ruff check src/                      # Lint
 ruff format src/                     # Format
-pytest                               # Run tests with coverage
+pytest                               # Run tests with coverage (no --timeout flag, pytest-timeout not installed)
 ```
 
 ## Two-Stage Signal Pipeline
@@ -242,7 +243,9 @@ Context features (6): cycle_phase (ordinal 0-5),
 - **HmRepository profiles cache**: `compute_trader_profiles()` SQL limits daily_bar scan to `relevant_codes` CTE (not full table). Profiles are cached and reused within 30-day windows (98% data overlap between adjacent days)
 - **SentimentCycleDetector light_metrics cache**: `light_metrics_cache: dict[date, _DayMetrics]` in `DailyContextCaches` eliminates 75% redundant lookback queries across consecutive days
 - **EventClassifier concept_members cache**: `concept_members_cache: dict[str, list[str]]` in `DailyContextCaches` eliminates N+1 concept membership queries (structural data, rarely changes)
-- **DataCoverage per-day**: `DailyContextCaches.coverage_cache` uses `table_has_data_for_date_batch()` to batch-query per-day coverage (5 SQL queries for entire range). Replaces old table-level `global_coverage` which incorrectly marked tables as available when only 2/1498 days had data
+- **DataCoverage per-day**: `DailyContextCaches.coverage_cache` uses `table_has_data_for_date_batch()` to batch-query per-day coverage (5 SQL queries for entire range, uses `WHERE IN` for precise date filtering). Replaces old table-level `global_coverage` which incorrectly marked tables as available when only 2/1498 days had data
+- **NaN handling**: `_safe_float_nullable()` preserves NULL for `fd_amount`, `turnover_ratio`, `float_mv`, `total_mv` in limit_list_d (DB stores NULL, repo layer `or 0.0` fallback). Other fields use `_safe_float()` (NaN→0.0)
+- **Sync retry**: `sync_date_range_bulk()` auto-retries failed batch chunks up to 2 rounds with exponential backoff. `stk_factor_pro` per-stock failures are logged (not silent)
 
 ## Conventions
 
@@ -253,6 +256,8 @@ Context features (6): cycle_phase (ordinal 0-5),
 - Immutable tuples for collections in model outputs
 - Date format: `date` objects internally, `YYYYMMDD` strings for Tushare API
 - Frozen dataclasses for all model outputs
+- `out_date` fields: always store as NULL (not empty string) to represent "未退出"
+- `_safe_float` / `_safe_float_nullable` / `_safe_int` in `limit_fetcher.py` are shared across all 14+ fetchers — add new variants, never change existing signatures
 - Optional dependencies: `[ml]` (scikit-learn), `[llm]` (openai), `[dev]` (pytest, ruff)
 - Linter/formatter: `ruff` (line-length=100, target py311)
 - **所有对话和交流必须使用中文**（包括解释、分析、建议、提问等，commit message 可中英混合）

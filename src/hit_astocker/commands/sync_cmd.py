@@ -23,7 +23,9 @@ def sync(
     start: str = typer.Option(None, "--start", help="Start date for range sync"),
     end: str = typer.Option(None, "--end", help="End date for range sync"),
     years: int | None = typer.Option(
-        None, "--years", help="Sync trailing N years ending at --date/today",
+        None,
+        "--years",
+        help="Sync trailing N years ending at --date/today",
     ),
     api: str = typer.Option(None, "--api", help="Specific API to sync"),
 ):
@@ -56,7 +58,7 @@ def sync(
 
             if day_span > 5:
                 # Use bulk batch mode for large ranges (>5 days)
-                results = orchestrator.sync_date_range_bulk(start_date, end_date)
+                results = orchestrator.sync_date_range_bulk(start_date, end_date, apis)
                 total = sum(v for v in results.values() if v > 0)
                 console.print(f"[green]Sync complete: {total} total records[/]")
             else:
@@ -67,8 +69,7 @@ def sync(
                     for day_results in all_results.values()
                 )
                 console.print(
-                    f"[green]Sync complete: {len(all_results)} days, "
-                    f"{total} total records[/]"
+                    f"[green]Sync complete: {len(all_results)} days, {total} total records[/]"
                 )
         else:
             if date_str:

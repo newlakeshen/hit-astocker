@@ -47,6 +47,6 @@ class ConceptDetailFetcher(FetcherBase):
                 "ts_code": row.get("ts_code", "") or "",
                 "name": row.get("name", "") or "",
                 "in_date": row.get("in_date", "") or "",
-                "out_date": row.get("out_date", "") or "",
+                "out_date": row.get("out_date") or None,
             })
         return records

@@ -151,8 +151,12 @@ def table_has_data_for_date_batch(
         ).fetchone()
         if not exists:
             return set()
+        date_strs = [d.strftime("%Y%m%d") for d in dates]
+        placeholders = ",".join("?" * len(date_strs))
         rows = conn.execute(
-            f"SELECT DISTINCT [{date_column}] FROM [{table}]",  # noqa: S608
+            f"SELECT DISTINCT [{date_column}] FROM [{table}] "  # noqa: S608
+            f"WHERE [{date_column}] IN ({placeholders})",
+            date_strs,
         ).fetchall()
         db_dates_str = {r[0] for r in rows}
         return {d for d in dates if d.strftime("%Y%m%d") in db_dates_str}

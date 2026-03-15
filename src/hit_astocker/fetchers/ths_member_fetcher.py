@@ -48,7 +48,7 @@ class ThsMemberFetcher(FetcherBase):
                 "name": row.get("name", "") or "",
                 "weight": _safe_float(row.get("weight")),
                 "in_date": row.get("in_date", "") or "",
-                "out_date": row.get("out_date", "") or "",
+                "out_date": row.get("out_date") or None,
                 "is_new": row.get("is_new", "") or "",
             })
         return records

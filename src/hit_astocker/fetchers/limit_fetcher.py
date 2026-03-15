@@ -77,10 +77,10 @@ def _df_to_records(df: pd.DataFrame) -> list[dict]:
             "pct_chg": _safe_float(row.get("pct_chg")),
             "amount": _safe_float(row.get("amount")),
             "limit_amount": _safe_float(row.get("limit_amount")),
-            "float_mv": _safe_float(row.get("float_mv")),
-            "total_mv": _safe_float(row.get("total_mv")),
-            "turnover_ratio": _safe_float(row.get("turnover_ratio")),
-            "fd_amount": _safe_float(row.get("fd_amount")),
+            "float_mv": _safe_float_nullable(row.get("float_mv")),
+            "total_mv": _safe_float_nullable(row.get("total_mv")),
+            "turnover_ratio": _safe_float_nullable(row.get("turnover_ratio")),
+            "fd_amount": _safe_float_nullable(row.get("fd_amount")),
             "first_time": row.get("first_time", "") or "",
             "last_time": row.get("last_time", "") or "",
             "open_times": _safe_int(row.get("open_times")),
@@ -98,6 +98,21 @@ def _safe_float(v) -> float:
         return float(v)
     except (ValueError, TypeError):
         return 0.0
+
+
+def _safe_float_nullable(v) -> float | None:
+    """Like _safe_float but returns None for NaN/missing values.
+
+    Use for fields where distinguishing "data missing" from "value is 0" matters
+    (e.g. fd_amount, turnover_ratio, float_mv, total_mv).
+    DB stores NULL; downstream repos use ``or 0.0`` fallback.
+    """
+    try:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return None
+        return float(v)
+    except (ValueError, TypeError):
+        return None
 
 
 def _safe_int(v) -> int:

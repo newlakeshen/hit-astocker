@@ -1,9 +1,13 @@
 """Fetcher for stk_factor_pro API (个股技术因子)."""
 
+import logging
+
 import pandas as pd
 
 from hit_astocker.fetchers.fetcher_base import FetcherBase
 from hit_astocker.fetchers.limit_fetcher import _safe_float
+
+logger = logging.getLogger(__name__)
 
 FIELDS = (
     "ts_code,trade_date,close,"
@@ -38,8 +42,9 @@ class StockFactorFetcher(FetcherBase):
                 )
                 if not df.empty:
                     all_records.extend(self._transform(df))
-            except Exception:
-                continue  # Skip individual failures
+            except Exception as e:
+                logger.warning("stk_factor_pro fetch failed for %s: %s", code, e)
+                continue
         return all_records
 
     def _call_api(self, date_str: str) -> pd.DataFrame:
