@@ -177,13 +177,21 @@ class BacktestEngine:
         signal_close = t_bar.close if t_bar and t_bar.close > 0 else t1_bar.pre_close
 
         t1_limit = t1_limits.get(code)
-        is_yizi = (
+        # 一字板检测: 优先用 OHLC 近似 (避免 open_times 盘后前视偏差)
+        # open == high == low → 全天一个价 = 一字涨停
+        is_yizi_ohlc = t1_bar.open == t1_bar.high == t1_bar.low and t1_bar.open > 0
+        is_yizi = is_yizi_ohlc or (
             t1_limit is not None
             and t1_limit.limit == LimitDirection.UP
             and t1_limit.open_times == 0
         )
+        # 回封检测: open != high 或 open != low 意味着盘中有波动 (曾开板)
+        # 且收盘涨停 (limit == UP)
         is_reseal = (
-            t1_limit is not None and t1_limit.limit == LimitDirection.UP and t1_limit.open_times > 0
+            t1_limit is not None
+            and t1_limit.limit == LimitDirection.UP
+            and not is_yizi_ohlc
+            and t1_bar.high > t1_bar.low
         )
 
         # ── Determine raw entry price ──
@@ -365,7 +373,13 @@ class BacktestEngine:
     ) -> tuple[float, str]:
         """Return (raw_exit_price, exit_reason). Slippage applied by caller."""
         # 1. 一字跌停: can't sell (no buyers)
-        is_yizi_down = (
+        # 优先 OHLC 近似 (避免 open_times 前视偏差): open == high == low
+        is_yizi_down_ohlc = (
+            t2_bar.open == t2_bar.high == t2_bar.low
+            and t2_bar.open > 0
+            and t2_bar.close < entry_price * 0.95
+        )
+        is_yizi_down = is_yizi_down_ohlc or (
             t2_limit is not None
             and t2_limit.limit == LimitDirection.DOWN
             and t2_limit.open_times == 0
@@ -387,9 +401,12 @@ class BacktestEngine:
         stop_hit = t2_bar.low <= stop_price
         target_hit = t2_bar.high >= target_price
 
-        # 3. Both triggered on same bar → take profit (先涨后跌概率更高)
+        # 3. Both triggered on same bar → take stop loss (保守假设)
+        # 日内 K 线无法确定止损/止盈的先后顺序,
+        # 打板策略中 T+2 先急跌再反弹 (炸板→回封) 并非罕见,
+        # 保守假设避免系统性高估收益
         if stop_hit and target_hit:
-            return target_price, ExitReason.TAKE_PROFIT.value
+            return stop_price, ExitReason.STOP_LOSS.value
 
         # 4. Only stop
         if stop_hit:
@@ -637,8 +654,8 @@ def _compute_return_metrics(
 
         sharpe = (mean_ret / std * math.sqrt(252)) if std > 0 else 0.0
 
-        # Sortino: downside deviation (target=0, denominator=N per standard definition)
-        downside_var = sum(min(r, 0.0) ** 2 for r in all_daily) / n
+        # Sortino: downside deviation (target=0, denominator=N-1 consistent with Sharpe)
+        downside_var = sum(min(r, 0.0) ** 2 for r in all_daily) / (n - 1)
         downside_std = math.sqrt(downside_var)
         sortino = (mean_ret / downside_std * math.sqrt(252)) if downside_std > 0 else 0.0
     else:

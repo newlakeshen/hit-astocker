@@ -90,6 +90,9 @@ class RankingModel:
         # Cross-validation with Pipeline to prevent scaler data leakage.
         # StandardScaler must be fit independently per fold — fitting on all
         # data before CV leaks validation fold statistics into training.
+        # TimeSeriesSplit preserves temporal ordering: train on past, validate
+        # on future — critical for financial time series with autocorrelation.
+        from sklearn.model_selection import TimeSeriesSplit
         from sklearn.pipeline import Pipeline
 
         pipeline = Pipeline(
@@ -99,18 +102,19 @@ class RankingModel:
             ]
         )
         n_splits = min(5, max(2, len(y_arr) // 50))
+        tscv = TimeSeriesSplit(n_splits=n_splits)
         auc_scores = cross_val_score(
             pipeline,
             x_arr,
             y_arr,
-            cv=n_splits,
+            cv=tscv,
             scoring="roc_auc",
         )
         acc_scores = cross_val_score(
             pipeline,
             x_arr,
             y_arr,
-            cv=n_splits,
+            cv=tscv,
             scoring="accuracy",
         )
 

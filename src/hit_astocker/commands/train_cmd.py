@@ -282,6 +282,7 @@ def _collect_training_data(
                         candidate,
                         ctx.sentiment,
                         cycle=ctx.sentiment_cycle,
+                        profit_effect=ctx.profit_effect,
                     )
                     if risk == RiskLevel.NO_GO:
                         continue

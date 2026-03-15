@@ -139,7 +139,7 @@ Removes candidates that should never be traded:
 - 19维特征向量: 13个因子分 + 6个上下文特征 (周期/类型/数据可用性)
 - logistic regression (可解释, 默认) 或 GBDT (捕获非线性交互)
 - 训练数据: 历史因子向量 + T+1收益标签 (盈利=1/亏损=0)
-- 5折交叉验证 + AUC评估 (Pipeline包裹StandardScaler防止数据泄漏)
+- TimeSeriesSplit 时序交叉验证 + AUC评估 (Pipeline包裹StandardScaler防止数据泄漏)
 - predict_proba → 概率 × 100 = 综合评分 (0-100)
 - 加载时校验 feature_columns 与当前代码一致, 不匹配则拒绝加载
 - 缺失因子用 50.0 (中性值) 而非 0.0, 避免与"极差"混淆
@@ -207,7 +207,7 @@ Context features (6): cycle_phase (ordinal 0-5),
 - FOLLOW_BOARD: 标准止损, 宽止盈+10% (连板有惯性)
 - SECTOR_LEADER: 标准止损, 最宽止盈+12% (龙头溢价最高)
 - 默认止盈 8%, 溢价上限 9%
-- 同 K 线止损+止盈均触发时取止盈 (先涨后跌概率更高)
+- 同 K 线止损+止盈均触发时取止损 (保守假设, 日内无法确定先后顺序)
 - 市场 regime 调整: STRONG_BULL(-0.5%止损/+2%止盈), BEAR(+1.5%/-1%), STRONG_BEAR(+2%/-2%)
 - **YIZI_HELD 成本修正**: 一字跌停无法卖出时不扣出场滑点/卖出佣金/印花税 (仅保留买入成本)
 - Disabled via --no-dynamic-stops
@@ -221,7 +221,7 @@ Context features (6): cycle_phase (ordinal 0-5),
 ### Historical Return Metrics (历史收益率):
 - **权益曲线**: 按 exit_date 复利计算, 月末快照降采样
 - **年化收益率 (CAGR)**: (final_equity/100)^(252/N_days) - 1
-- **Sharpe/Sortino** (rf=0): 日收益率序列 (含无交易日=0) 年化
+- **Sharpe/Sortino** (rf=0, 均用N-1样本方差): 日收益率序列 (含无交易日=0) 年化
 - **最大回撤**: peak-to-trough 幅度 + 起止日期
 - **Calmar 比率**: CAGR / |max_drawdown| (保留正负号)
 - **月度/年度收益表**: 按 exit_date 分月/年的 BucketStats
