@@ -299,6 +299,7 @@ def backtest(
             all_skipped,
             total_signals,
             trading_dates,
+            num_slots=settings.signal_top_k,
         )
 
         _render_config(config, window.start_label, window.end_label)

@@ -417,11 +417,15 @@ def compute_backtest_stats(
     skipped: list[SkippedSignal],
     total_signals: int,
     trading_days: list[date] | None = None,
+    num_slots: int = 5,
 ) -> BacktestStats:
     """Compute aggregate statistics from trade results.
 
     When *trading_days* is provided, also computes return metrics:
     equity curve, Sharpe/Sortino ratios, max drawdown, CAGR, monthly/yearly returns.
+
+    *num_slots*: number of equal-weight capital slots (default=signal_top_k).
+    Each trade uses 1/num_slots of capital. Affects equity curve compounding.
     """
     traded = len(trades)
     skipped_count = len(skipped)
@@ -454,7 +458,7 @@ def compute_backtest_stats(
     profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
 
     # Return metrics (equity curve, Sharpe, drawdown, etc.)
-    return_kwargs = _compute_return_metrics(trades, trading_days) if trading_days else {}
+    return_kwargs = _compute_return_metrics(trades, trading_days, num_slots) if trading_days else {}
 
     return BacktestStats(
         total_signals=total_signals,
@@ -547,14 +551,17 @@ def _count_skip_reasons(skipped: list[SkippedSignal]) -> dict[str, int]:
 def _compute_return_metrics(
     trades: list[TradeResult],
     trading_days: list[date],
+    num_slots: int = 5,
 ) -> dict[str, object]:
     """Compute equity curve, risk-adjusted returns, monthly/yearly breakdowns.
 
     Returns a dict of keyword args to merge into BacktestStats.
 
-    Equity model: equal-weight per day.
+    Equity model: equal-weight fixed-slot portfolio.
+    - *num_slots* capital slots (default 5 = signal_top_k), each uses 1/K of capital
     - Group trades by exit_date (PnL realized on exit)
-    - Daily return = mean(pnl_pct) of trades closing that day
+    - Daily portfolio return = sum(pnl_pct) / num_slots
+      (not mean — accounts for partial capital deployment on light days)
     - Equity compounds: equity *= (1 + daily_return / 100)
     - Sharpe/Sortino assume rf=0 (appropriate for short-term board-hitting)
     - Sortino uses standard downside deviation (denominator=N, target=0)
@@ -562,12 +569,16 @@ def _compute_return_metrics(
     if not trades:
         return {}
 
+    num_slots = max(1, num_slots)
+
     # ── Build daily returns (grouped by exit_date) ──
+    # Portfolio return = sum(per-trade returns) / num_slots
+    # Each trade uses 1/num_slots of capital; unused slots earn 0%
     daily_pnls: dict[date, list[float]] = {}
     for t in trades:
         daily_pnls.setdefault(t.exit_date, []).append(t.pnl_pct)
 
-    daily_returns: dict[date, float] = {d: sum(pnls) / len(pnls) for d, pnls in daily_pnls.items()}
+    daily_returns: dict[date, float] = {d: sum(pnls) / num_slots for d, pnls in daily_pnls.items()}
 
     # ── Equity curve (compound over all trading days in range) ──
     equity = 100.0

@@ -48,7 +48,8 @@ class TestComputeReturnMetrics:
     def test_single_winning_trade(self):
         trades = [_make_trade(date(2025, 1, 3), 5.0)]
         trading_days = [date(2025, 1, 2), date(2025, 1, 3)]
-        result = _compute_return_metrics(trades, trading_days)
+        # num_slots=1 for single-trade tests (full capital per trade)
+        result = _compute_return_metrics(trades, trading_days, num_slots=1)
 
         # Equity: 100 * 1.0 * 1.05 = 105.0
         assert result["annualized_return"] > 0
@@ -59,7 +60,7 @@ class TestComputeReturnMetrics:
     def test_single_losing_trade(self):
         trades = [_make_trade(date(2025, 1, 3), -5.0)]
         trading_days = [date(2025, 1, 2), date(2025, 1, 3)]
-        result = _compute_return_metrics(trades, trading_days)
+        result = _compute_return_metrics(trades, trading_days, num_slots=1)
 
         assert result["annualized_return"] < 0
         assert result["sharpe_ratio"] < 0
@@ -68,15 +69,15 @@ class TestComputeReturnMetrics:
     def test_equity_curve_compounds_correctly(self):
         """Two trades on different days: equity should compound.
 
-        Equity curve is downsampled to monthly snapshots (last day per month),
-        so we check the final month-end point.
+        With num_slots=1, each trade uses 100% capital (single-position model).
+        Equity curve is downsampled to monthly snapshots (last day per month).
         """
         trades = [
             _make_trade(date(2025, 1, 3), 10.0, trade_date=date(2025, 1, 2)),
             _make_trade(date(2025, 1, 6), -5.0, trade_date=date(2025, 1, 3)),
         ]
         trading_days = [date(2025, 1, 2), date(2025, 1, 3), date(2025, 1, 6)]
-        result = _compute_return_metrics(trades, trading_days)
+        result = _compute_return_metrics(trades, trading_days, num_slots=1)
 
         curve = result["equity_curve"]
         # Monthly downsample: only last day of January kept (Jan 6)
@@ -96,7 +97,7 @@ class TestComputeReturnMetrics:
             date(2025, 1, 3),
             date(2025, 1, 6),
         ]
-        result = _compute_return_metrics(trades, trading_days)
+        result = _compute_return_metrics(trades, trading_days, num_slots=1)
 
         # Peak = 110, valley = 110 * 0.9 = 99 → drawdown = (99-110)/110 = -10%
         assert result["max_drawdown_pct"] == pytest.approx(-10.0, abs=0.1)
@@ -110,7 +111,7 @@ class TestComputeReturnMetrics:
             _make_trade(date(2025, 1, 7), 4.0),
         ]
         trading_days = [date(2025, 1, 3), date(2025, 1, 6), date(2025, 1, 7)]
-        result = _compute_return_metrics(trades, trading_days)
+        result = _compute_return_metrics(trades, trading_days, num_slots=1)
 
         assert result["max_drawdown_pct"] == 0.0
         assert result["calmar_ratio"] == 0.0  # no drawdown → 0
@@ -123,7 +124,7 @@ class TestComputeReturnMetrics:
             _make_trade(date(2025, 1, 6), -5.0),
         ]
         trading_days = [date(2025, 1, 2), date(2025, 1, 3), date(2025, 1, 6)]
-        result = _compute_return_metrics(trades, trading_days)
+        result = _compute_return_metrics(trades, trading_days, num_slots=1)
 
         assert result["calmar_ratio"] < 0  # negative CAGR / |max_dd|
 
@@ -141,19 +142,32 @@ class TestComputeReturnMetrics:
         assert result["by_month"]["2025-01"].total_pnl == 5.0
         assert result["by_month"]["2025-02"].total_pnl == -3.0
 
-    def test_same_day_multiple_trades_averaged(self):
-        """Two trades closing same day → daily return = mean(pnl_pcts)."""
+    def test_same_day_multiple_trades_slot_weighted(self):
+        """Two trades closing same day, 5 slots → daily return = sum(pnl) / 5."""
         trades = [
             _make_trade(date(2025, 1, 3), 10.0),
             _make_trade(date(2025, 1, 3), -4.0),
         ]
         trading_days = [date(2025, 1, 2), date(2025, 1, 3)]
-        result = _compute_return_metrics(trades, trading_days)
+        result = _compute_return_metrics(trades, trading_days, num_slots=5)
 
         curve = result["equity_curve"]
         equities = {pt.trade_date: pt.equity for pt in curve}
-        # mean(10, -4) = 3.0% → 100 * 1.03 = 103.0
-        assert equities[date(2025, 1, 3)] == pytest.approx(103.0, abs=0.01)
+        # sum(10, -4) / 5 = 1.2% → 100 * 1.012 = 101.2
+        assert equities[date(2025, 1, 3)] == pytest.approx(101.2, abs=0.01)
+
+    def test_num_slots_dilutes_returns(self):
+        """With more slots, each trade has less impact on portfolio."""
+        trades = [_make_trade(date(2025, 1, 3), -10.0)]
+        trading_days = [date(2025, 1, 2), date(2025, 1, 3)]
+
+        # 1 slot (full capital): -10%
+        r1 = _compute_return_metrics(trades, trading_days, num_slots=1)
+        # 5 slots (20% capital): -10% / 5 = -2%
+        r5 = _compute_return_metrics(trades, trading_days, num_slots=5)
+
+        assert r1["equity_curve"][-1].equity == pytest.approx(90.0, abs=0.01)
+        assert r5["equity_curve"][-1].equity == pytest.approx(98.0, abs=0.01)
 
 
 class TestMaxConsecutiveWins:
