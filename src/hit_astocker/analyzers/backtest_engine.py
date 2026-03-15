@@ -16,7 +16,7 @@ Exit rules (T+2, priority order):
   3. open gaps through target → TAKE_PROFIT at open
   4. low touches stop        → STOP_LOSS at stop_price
   5. high touches target      → TAKE_PROFIT at target_price
-  6. both 4 & 5 on same bar  → TAKE_PROFIT (optimistic: 先涨后跌概率更高)
+  6. both 4 & 5 on same bar  → STOP_LOSS (保守假设: 日内无法确定先后顺序)
   7. default                  → CLOSE at T+2 close
 
 Friction applied to every trade:
@@ -185,11 +185,12 @@ class BacktestEngine:
             and t1_limit.limit == LimitDirection.UP
             and t1_limit.open_times == 0
         )
-        # 回封检测: open != high 或 open != low 意味着盘中有波动 (曾开板)
-        # 且收盘涨停 (limit == UP)
+        # 回封检测: 涨停板曾被打开 (open_times > 0) 且收盘重新封板 (limit == UP)
+        # open_times == 0 表示从未开板 (低开涨至涨停), 不算回封
         is_reseal = (
             t1_limit is not None
             and t1_limit.limit == LimitDirection.UP
+            and t1_limit.open_times > 0
             and not is_yizi_ohlc
             and t1_bar.high > t1_bar.low
         )
@@ -588,7 +589,7 @@ def _compute_return_metrics(
       (not mean — accounts for partial capital deployment on light days)
     - Equity compounds: equity *= (1 + daily_return / 100)
     - Sharpe/Sortino assume rf=0 (appropriate for short-term board-hitting)
-    - Sortino uses standard downside deviation (denominator=N, target=0)
+    - Sortino uses downside deviation (denominator=N-1 consistent with Sharpe, target=0)
     """
     if not trades:
         return {}
