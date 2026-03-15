@@ -224,7 +224,8 @@ class BacktestEngine:
 
         # ── Fill rate filter (RE_SEAL: low turnover → queue can't fill) ──
         if config.execution_mode == ExecutionMode.RE_SEAL:
-            if t1_limit and t1_limit.turnover_ratio < config.min_reseal_turnover:
+            tr = t1_limit.turnover_ratio if t1_limit else None
+            if t1_limit and tr is not None and tr < config.min_reseal_turnover:
                 return self._skip(sig, SkipReason.LOW_FILL_RATE)
 
         # ── Apply slippage to entry ──

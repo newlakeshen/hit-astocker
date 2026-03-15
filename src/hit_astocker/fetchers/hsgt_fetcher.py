@@ -3,7 +3,7 @@
 import pandas as pd
 
 from hit_astocker.fetchers.fetcher_base import FetcherBase
-from hit_astocker.fetchers.limit_fetcher import _safe_float
+from hit_astocker.fetchers.limit_fetcher import _safe_float, _safe_int
 
 FIELDS = "trade_date,ts_code,name,close,change,rank,market_type,amount,net_amount,buy,sell"
 
@@ -16,8 +16,10 @@ class HsgtTop10Fetcher(FetcherBase):
         frames = []
         for market_type in ("1", "3"):  # 1=沪股通, 3=深股通
             df = self._client.query(
-                "hsgt_top10", trade_date=date_str,
-                market_type=market_type, fields=FIELDS,
+                "hsgt_top10",
+                trade_date=date_str,
+                market_type=market_type,
+                fields=FIELDS,
             )
             if not df.empty:
                 frames.append(df)
@@ -27,8 +29,12 @@ class HsgtTop10Fetcher(FetcherBase):
         frames = []
         for market_type in ("1", "3"):
             df = self._client.query(
-                "hsgt_top10", start_date=start_str, end_date=end_str,
-                market_type=market_type, fields=FIELDS, page_size=5000,
+                "hsgt_top10",
+                start_date=start_str,
+                end_date=end_str,
+                market_type=market_type,
+                fields=FIELDS,
+                page_size=5000,
             )
             if not df.empty:
                 frames.append(df)
@@ -37,17 +43,19 @@ class HsgtTop10Fetcher(FetcherBase):
     def _transform(self, df: pd.DataFrame) -> list[dict]:
         records = []
         for _, row in df.iterrows():
-            records.append({
-                "trade_date": row.get("trade_date", ""),
-                "ts_code": row.get("ts_code", ""),
-                "name": row.get("name", "") or "",
-                "close": _safe_float(row.get("close")),
-                "change": _safe_float(row.get("change")),
-                "rank": int(row.get("rank", 0) or 0),
-                "market_type": row.get("market_type", "") or "",
-                "amount": _safe_float(row.get("amount")),
-                "net_amount": _safe_float(row.get("net_amount")),
-                "buy": _safe_float(row.get("buy")),
-                "sell": _safe_float(row.get("sell")),
-            })
+            records.append(
+                {
+                    "trade_date": row.get("trade_date", ""),
+                    "ts_code": row.get("ts_code", ""),
+                    "name": row.get("name", "") or "",
+                    "close": _safe_float(row.get("close")),
+                    "change": _safe_float(row.get("change")),
+                    "rank": _safe_int(row.get("rank")),
+                    "market_type": row.get("market_type", "") or "",
+                    "amount": _safe_float(row.get("amount")),
+                    "net_amount": _safe_float(row.get("net_amount")),
+                    "buy": _safe_float(row.get("buy")),
+                    "sell": _safe_float(row.get("sell")),
+                }
+            )
         return records

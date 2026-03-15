@@ -129,6 +129,24 @@ class SyncOrchestrator:
                     results[api_name] = 0
                     self._log_sync(api_name, date_str, 0, "empty")
 
+            # Integrity check: rollback partial sync for multi-shard tables
+            _rollback_partial_shards(
+                self._conn,
+                fetched,
+                results,
+                date_str,
+                shard_apis=["limit_list_d_U", "limit_list_d_D", "limit_list_d_Z"],
+                table="limit_list_d",
+            )
+            _rollback_partial_shards(
+                self._conn,
+                fetched,
+                results,
+                date_str,
+                shard_apis=["kpl_list_涨停", "kpl_list_炸板", "kpl_list_跌停"],
+                table="kpl_list",
+            )
+
         # Phase 3: On-demand per-stock APIs (stk_factor_pro)
         stk_count = self._sync_stk_factors(date_str)
         results["stk_factor_pro"] = stk_count
@@ -196,10 +214,12 @@ class SyncOrchestrator:
             self._log_sync("concept_detail", date_str, 0, "empty")
             return 0
 
-        # Filter out stocks already cached in concept_detail
+        # Filter out stocks already cached in concept_detail (within 30 days)
         placeholders = ",".join("?" * len(candidate_codes))
         existing = self._conn.execute(
-            f"SELECT DISTINCT ts_code FROM concept_detail WHERE ts_code IN ({placeholders})",
+            f"SELECT DISTINCT ts_code FROM concept_detail "
+            f"WHERE ts_code IN ({placeholders}) "
+            f"AND created_at > datetime('now', '-30 days')",
             candidate_codes,
         ).fetchall()
         existing_set = {r["ts_code"] for r in existing}
@@ -248,10 +268,12 @@ class SyncOrchestrator:
             )
             return 0
 
-        # Filter out already-cached concepts
+        # Filter out already-cached concepts (within 30 days)
         placeholders = ",".join("?" * len(concept_codes))
         existing = self._conn.execute(
-            f"SELECT DISTINCT ts_code FROM ths_member WHERE ts_code IN ({placeholders})",
+            f"SELECT DISTINCT ts_code FROM ths_member "
+            f"WHERE ts_code IN ({placeholders}) "
+            f"AND created_at > datetime('now', '-30 days')",
             concept_codes,
         ).fetchall()
         existing_set = {r["ts_code"] for r in existing}
@@ -456,21 +478,34 @@ class SyncOrchestrator:
                         count = repo.upsert_many(records)
                         results[api_name] = results.get(api_name, 0) + count
                         self._log_sync(
-                            api_name, f"{c_start_str}~{c_end_str}", count, "success",
+                            api_name,
+                            f"{c_start_str}~{c_end_str}",
+                            count,
+                            "success",
                         )
                         logger.info(
                             "Retry succeeded for %s (%s~%s): %d records",
-                            api_name, c_start_str, c_end_str, count,
+                            api_name,
+                            c_start_str,
+                            c_end_str,
+                            count,
                         )
                     else:
                         self._log_sync(
-                            api_name, f"{c_start_str}~{c_end_str}", 0, "empty",
+                            api_name,
+                            f"{c_start_str}~{c_end_str}",
+                            0,
+                            "empty",
                         )
                     self._conn.commit()
                 except Exception as e:
                     logger.error(
                         "Retry %d failed for %s (%s~%s): %s",
-                        retry_round + 1, api_name, c_start_str, c_end_str, e,
+                        retry_round + 1,
+                        api_name,
+                        c_start_str,
+                        c_end_str,
+                        e,
                     )
                     still_failed.append((item, c_start, c_end))
             failed_batch_items = still_failed
@@ -589,6 +624,44 @@ class SyncOrchestrator:
                VALUES (?, ?, ?, ?, ?)""",
             (api_name, date_str, count, status, error),
         )
+
+
+_SHARD_TABLES = frozenset({"limit_list_d", "kpl_list"})
+
+
+def _rollback_partial_shards(
+    conn: sqlite3.Connection,
+    fetched: dict[str, tuple[str, list | None]],
+    results: dict[str, int],
+    date_str: str,
+    *,
+    shard_apis: list[str],
+    table: str,
+) -> None:
+    """Rollback all shards if some but not all failed for a multi-shard table.
+
+    e.g. limit_list_d has U/D/Z shards — if D fails but U/Z succeed,
+    downstream counts (up_down_ratio) will be incorrect. Better to
+    have no data than partial data.
+
+    *table* must be in ``_SHARD_TABLES`` allowlist (prevents SQL injection).
+    Only call with shard_apis that are all present in *fetched*.
+    """
+    if table not in _SHARD_TABLES:
+        raise ValueError(f"Unknown shard table: {table}")
+    shard_results = [fetched.get(api, (None, None))[1] for api in shard_apis]
+    has_some_failed = any(r is None for r in shard_results)
+    all_failed = all(r is None for r in shard_results)
+    if has_some_failed and not all_failed:
+        logger.error(
+            "Partial %s sync for %s — rolling back all %s records for this date",
+            table,
+            date_str,
+            table,
+        )
+        conn.execute(f"DELETE FROM {table} WHERE trade_date = ?", (date_str,))
+        for api in shard_apis:
+            results[api] = -1
 
 
 def _monthly_chunks(start: date, end: date) -> list[tuple[date, date]]:

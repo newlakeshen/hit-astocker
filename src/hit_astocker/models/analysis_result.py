@@ -19,8 +19,8 @@ class FirstBoardResult:
     first_time: str
     open_times: int
     limit_amount: float
-    float_mv: float
-    turnover_ratio: float
+    float_mv: float | None
+    turnover_ratio: float | None
     sector_name: str = ""
 
 

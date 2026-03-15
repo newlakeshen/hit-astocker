@@ -217,7 +217,7 @@ class StockPredictor:
             score += 10
 
         # Seal strength
-        if record.float_mv > 0 and record.limit_amount / record.float_mv > 0.05:
+        if record.float_mv and record.float_mv > 0 and record.limit_amount / record.float_mv > 0.05:
             score += 5
 
         return min(score, 100)

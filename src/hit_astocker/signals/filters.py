@@ -10,6 +10,5 @@ def filter_candidates(
 ) -> list[LimitRecord]:
     """Filter out ST, BJ, and optionally mega-cap stocks."""
     return [
-        r for r in records
-        if not should_exclude(r.ts_code, r.name, max_total_mv, r.total_mv)
+        r for r in records if not should_exclude(r.ts_code, r.name, max_total_mv, r.total_mv or 0.0)
     ]

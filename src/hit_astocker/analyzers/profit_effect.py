@@ -53,7 +53,7 @@ class _TodayBoardRecord:
     """内部中间数据: 今日的涨停/炸板记录."""
 
     ts_code: str
-    limit_type: str     # 'U' or 'Z'
+    limit_type: str  # 'U' or 'Z'
     open_times: int
     first_time: str
     height: int
@@ -96,10 +96,14 @@ class ProfitEffectAnalyzer:
         # Step 4: 分层聚合
         by_height = self._aggregate_tiers(prev_stocks, today_boards, filter_fn=None)
         by_height_10cm = self._aggregate_tiers(
-            prev_stocks, today_boards, filter_fn=lambda s: not s.is_20cm,
+            prev_stocks,
+            today_boards,
+            filter_fn=lambda s: not s.is_20cm,
         )
         by_height_20cm = self._aggregate_tiers(
-            prev_stocks, today_boards, filter_fn=lambda s: s.is_20cm,
+            prev_stocks,
+            today_boards,
+            filter_fn=lambda s: s.is_20cm,
         )
 
         # Step 5: 总体指标
@@ -111,13 +115,14 @@ class ProfitEffectAnalyzer:
                 returns.append((s.today_close - s.prev_close) / s.prev_close * 100)
 
         overall_premium = sum(premiums) / len(premiums) if premiums else 0.0
-        overall_win_rate = (
-            sum(1 for r in returns if r > 0) / len(returns) if returns else 0.0
-        )
+        overall_win_rate = sum(1 for r in returns if r > 0) / len(returns) if returns else 0.0
 
         # Step 6: Regime 判定
         regime_score = self._compute_regime_score(
-            overall_premium, overall_win_rate, by_height, today_boards,
+            overall_premium,
+            overall_win_rate,
+            by_height,
+            today_boards,
         )
         regime = _classify_regime(regime_score)
 
@@ -230,7 +235,10 @@ class ProfitEffectAnalyzer:
             if filter_fn is not None:
                 # 对 today_boards 使用 is_20cm 做过滤
                 mock = _StockRecord(
-                    ts_code=b.ts_code, prev_close=0, height=0, is_20cm=b.is_20cm,
+                    ts_code=b.ts_code,
+                    prev_close=0,
+                    height=0,
+                    is_20cm=b.is_20cm,
                 )
                 if not filter_fn(mock):
                     continue
@@ -245,9 +253,7 @@ class ProfitEffectAnalyzer:
 
         # ── 合并生成 TierProfitEffect ──
         all_tiers = sorted(
-            set(tier_prev_count.keys())
-            | set(tier_up.keys())
-            | set(tier_broken.keys()),
+            set(tier_prev_count.keys()) | set(tier_up.keys()) | set(tier_broken.keys()),
             key=lambda t: _tier_sort_key(t),
         )
 
@@ -261,20 +267,29 @@ class ProfitEffectAnalyzer:
             non_yizi = tier_non_yizi.get(tier, 0)
             today_total = up + broken
 
-            result.append(TierProfitEffect(
-                tier=tier,
-                prev_count=pc,
-                avg_premium=round(sum(prems) / len(prems), 2) if prems else 0.0,
-                avg_return=round(sum(rets) / len(rets), 2) if rets else 0.0,
-                win_rate=round(
-                    sum(1 for r in rets if r > 0) / len(rets), 4,
-                ) if rets else 0.0,
-                today_count=today_total,
-                broken_rate=round(
-                    broken / today_total, 4,
-                ) if today_total > 0 else 0.0,
-                non_yizi_rate=round(non_yizi / up, 4) if up > 0 else 0.0,
-            ))
+            result.append(
+                TierProfitEffect(
+                    tier=tier,
+                    prev_count=pc,
+                    avg_premium=round(sum(prems) / len(prems), 2) if prems else 0.0,
+                    avg_return=round(sum(rets) / len(rets), 2) if rets else 0.0,
+                    win_rate=round(
+                        sum(1 for r in rets if r > 0) / len(rets),
+                        4,
+                    )
+                    if rets
+                    else 0.0,
+                    today_count=today_total,
+                    broken_rate=round(
+                        broken / today_total,
+                        4,
+                    )
+                    if today_total > 0
+                    else 0.0,
+                    non_yizi_rate=round(non_yizi / up, 4) if up > 0 else 0.0,
+                    is_small_sample=pc < 5,
+                )
+            )
 
         return result
 
@@ -303,9 +318,7 @@ class ProfitEffectAnalyzer:
 
         # 正溢价层占比 (15%)
         if by_height:
-            positive_tiers = sum(
-                1 for t in by_height if t.avg_premium > 0 and t.prev_count >= 2
-            )
+            positive_tiers = sum(1 for t in by_height if t.avg_premium > 0 and t.prev_count >= 2)
             tier_breadth = positive_tiers / len(by_height) * 100
         else:
             tier_breadth = 0
@@ -314,9 +327,7 @@ class ProfitEffectAnalyzer:
         total_up = sum(1 for b in today_boards if b.limit_type == "U")
         total_broken = sum(1 for b in today_boards if b.limit_type == "Z")
         total_board = total_up + total_broken
-        non_broken_score = (
-            (1 - total_broken / total_board) * 100 if total_board > 0 else 50
-        )
+        non_broken_score = (1 - total_broken / total_board) * 100 if total_board > 0 else 50
 
         return (
             premium_score * 0.40

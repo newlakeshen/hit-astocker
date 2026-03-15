@@ -28,8 +28,12 @@ from hit_astocker.repositories.sector_repo import SectorRepository
 
 class FirstBoardAnalyzer:
     def __init__(
-        self, conn: sqlite3.Connection, settings: Settings | None = None,
-        *, limit_repo=None, kpl_repo=None,
+        self,
+        conn: sqlite3.Connection,
+        settings: Settings | None = None,
+        *,
+        limit_repo=None,
+        kpl_repo=None,
     ):
         self._limit_repo = limit_repo or LimitListRepository(conn)
         self._kpl_repo = kpl_repo or KplRepository(conn)
@@ -42,10 +46,7 @@ class FirstBoardAnalyzer:
             return []
 
         top_sectors = self._sector_repo.find_sector_names_by_date(trade_date, top_n=5)
-        kpl_map = {
-            rec.ts_code: rec
-            for rec in self._kpl_repo.find_by_tag(trade_date, tag="涨停")
-        }
+        kpl_map = {rec.ts_code: rec for rec in self._kpl_repo.find_by_tag(trade_date, tag="涨停")}
 
         results = []
         for record in first_boards:
@@ -119,9 +120,9 @@ class FirstBoardAnalyzer:
         return 25.0
 
     @staticmethod
-    def _score_seal_strength(limit_amount: float, float_mv: float) -> float:
+    def _score_seal_strength(limit_amount: float, float_mv: float | None) -> float:
         """Score based on seal amount relative to float market value."""
-        if float_mv <= 0:
+        if float_mv is None or float_mv <= 0:
             return 50.0
         ratio = limit_amount / float_mv
         # ratio > 0.1 (10%) is very strong, 0.05 is good, < 0.01 is weak
@@ -138,8 +139,10 @@ class FirstBoardAnalyzer:
         return float(PURITY_SCORES.get(open_times, PURITY_DEFAULT_SCORE))
 
     @staticmethod
-    def _score_turnover(turnover_ratio: float, open_times: int) -> float:
+    def _score_turnover(turnover_ratio: float | None, open_times: int) -> float:
         """Low turnover with good seal = strong; high turnover with opens = weak."""
+        if turnover_ratio is None:
+            return 50.0  # neutral score when data is missing
         if open_times == 0:
             # One-shot seal: lower turnover is better
             if turnover_ratio < 5:

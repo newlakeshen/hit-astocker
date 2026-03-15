@@ -11,7 +11,8 @@ class ConceptRepository(BaseRepository):
         super().__init__(conn, "concept_detail")
 
     def find_concepts_for_codes(
-        self, ts_codes: list[str],
+        self,
+        ts_codes: list[str],
     ) -> dict[str, list[str]]:
         """Find concept names for a batch of stock codes.
 
@@ -24,7 +25,7 @@ class ConceptRepository(BaseRepository):
         sql = f"""
             SELECT ts_code, concept_name FROM concept_detail
             WHERE ts_code IN ({placeholders})
-              AND (out_date IS NULL OR out_date = '')
+              AND out_date IS NULL
         """
         rows = self._conn.execute(sql, ts_codes).fetchall()
         result: dict[str, list[str]] = defaultdict(list)
@@ -37,7 +38,7 @@ class ConceptRepository(BaseRepository):
         sql = """
             SELECT ts_code FROM concept_detail
             WHERE concept_name = ?
-              AND (out_date IS NULL OR out_date = '')
+              AND out_date IS NULL
         """
         rows = self._conn.execute(sql, (concept_name,)).fetchall()
         return [r["ts_code"] for r in rows]
@@ -57,7 +58,7 @@ class ThsMemberRepository(BaseRepository):
         sql = """
             SELECT DISTINCT ts_code FROM ths_member
             WHERE code = ?
-              AND (out_date IS NULL OR out_date = '')
+              AND out_date IS NULL
         """
         rows = self._conn.execute(sql, (stock_code,)).fetchall()
         return [r["ts_code"] for r in rows]
@@ -67,13 +68,14 @@ class ThsMemberRepository(BaseRepository):
         sql = """
             SELECT COUNT(*) FROM ths_member
             WHERE ts_code = ?
-              AND (out_date IS NULL OR out_date = '')
+              AND out_date IS NULL
         """
         row = self._conn.execute(sql, (concept_code,)).fetchone()
         return row[0] if row else 0
 
     def find_members_batch(
-        self, concept_codes: list[str],
+        self,
+        concept_codes: list[str],
     ) -> dict[str, list[str]]:
         """Find member stock codes for multiple concepts.
 
@@ -85,7 +87,7 @@ class ThsMemberRepository(BaseRepository):
         sql = f"""
             SELECT ts_code, code FROM ths_member
             WHERE ts_code IN ({placeholders})
-              AND (out_date IS NULL OR out_date = '')
+              AND out_date IS NULL
         """
         rows = self._conn.execute(sql, concept_codes).fetchall()
         result: dict[str, list[str]] = defaultdict(list)
@@ -113,7 +115,7 @@ class ThsMemberRepository(BaseRepository):
         sql = """
             SELECT code FROM ths_member
             WHERE ts_code = ?
-              AND (out_date IS NULL OR out_date = '')
+              AND out_date IS NULL
         """
         rows = self._conn.execute(sql, (concept_code,)).fetchall()
         return [r["code"] for r in rows]

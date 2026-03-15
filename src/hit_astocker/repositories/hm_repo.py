@@ -29,9 +29,7 @@ class HmRepository(BaseRepository):
         if self._has_data_cache is not None:
             return self._has_data_cache
         try:
-            row = self._conn.execute(
-                "SELECT 1 FROM hm_detail LIMIT 1"
-            ).fetchone()
+            row = self._conn.execute("SELECT 1 FROM hm_detail LIMIT 1").fetchone()
             self._has_data_cache = row is not None
         except Exception:
             self._has_data_cache = False
@@ -61,15 +59,11 @@ class HmRepository(BaseRepository):
 
         Returns {hm_name: TraderProfile}.
         """
-        # Cache: profiles barely change day-to-day (59/60 overlap).
-        # Reuse cached profiles if computed within last 20 trading days.
+        # Cache: exact date match only. Approximate caching (days_diff<=30)
+        # was incorrect for backtest/train which reuse the same repo instance
+        # across multiple dates — profiles must be recomputed per date.
         if trade_date in self._profiles_cache:
             return self._profiles_cache[trade_date]
-        for cached_date, cached_profiles in self._profiles_cache.items():
-            days_diff = abs((trade_date - cached_date).days)
-            if days_diff <= 30:  # ~20 trading days
-                self._profiles_cache[trade_date] = cached_profiles
-                return cached_profiles
 
         recent_dates = get_recent_trading_days(trade_date, lookback_days)
         if not recent_dates:
@@ -106,7 +100,7 @@ class HmRepository(BaseRepository):
                 tb.hm_name,
                 COUNT(*) AS total_buys,
                 SUM(CASE WHEN dwn.next_pct > 0 THEN 1 ELSE 0 END) AS wins,
-                AVG(COALESCE(dwn.next_pct, 0)) AS avg_premium,
+                AVG(dwn.next_pct) AS avg_premium,
                 COUNT(DISTINCT tb.trade_date) AS active_days
             FROM trader_buys tb
             LEFT JOIN daily_with_next dwn

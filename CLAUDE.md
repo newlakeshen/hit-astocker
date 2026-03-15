@@ -235,6 +235,7 @@ Context features (6): cycle_phase (ordinal 0-5),
 ### Profit Effect Stratification (赚钱效应分层):
 - **维度**: 首板/2板/3板/空间板 × 10cm(主板)/20cm(创科)
 - **指标**: 次日溢价、次日收益、次日胜率、炸板率、非一字率(可参与度)
+- **小样本标记**: `TierProfitEffect.is_small_sample` (prev_count<5); `tier_for_height_by_type()` 自动 fallback 到低一层高度
 - **Regime**: STRONG(≥65) / NORMAL(≥45) / WEAK(≥25) / FROZEN(<25)
 - **集成**: Stage1 FROZEN→kill / WEAK→过滤; RiskAssessor regime overlay; Dashboard 分层表
 
@@ -247,11 +248,14 @@ Context features (6): cycle_phase (ordinal 0-5),
 - **ROW_NUMBER batch queries**: Always enumerate columns explicitly in the outer SELECT to exclude the `rn` column
 - **Repo bulk preloading** (training/backtest): `LimitListRepository`, `LimitStepRepository`, `KplRepository` support `preload_range(start, end)` — one bulk SQL loads all records into memory, subsequent per-date queries use dict lookups instead of SQL. All derived methods (count_by_type, find_first_board_stocks, etc.) check `_records_cache` before hitting DB
 - **Shared repo instances**: `DailyContextCaches` holds shared pre-loaded repos (`limit_repo`, `step_repo`, `kpl_repo`, `hm_repo`). Analyzers accept optional repo params (e.g., `limit_repo=None`) — when provided, skip creating new repo instances. This ensures preloaded data is shared across all analyzers in the same `build_daily_context` call
-- **HmRepository profiles cache**: `compute_trader_profiles()` SQL limits daily_bar scan to `relevant_codes` CTE (not full table). Profiles are cached and reused within 30-day windows (98% data overlap between adjacent days)
+- **HmRepository profiles cache**: `compute_trader_profiles()` SQL limits daily_bar scan to `relevant_codes` CTE (not full table). Profiles are cached by exact `trade_date` match only (no approximate 30-day reuse — backtest/train must recompute per date)
 - **SentimentCycleDetector light_metrics cache**: `light_metrics_cache: dict[date, _DayMetrics]` in `DailyContextCaches` eliminates 75% redundant lookback queries across consecutive days
 - **EventClassifier concept_members cache**: `concept_members_cache: dict[str, list[str]]` in `DailyContextCaches` eliminates N+1 concept membership queries (structural data, rarely changes)
 - **DataCoverage per-day**: `DailyContextCaches.coverage_cache` uses `table_has_data_for_date_batch()` to batch-query per-day coverage (5 SQL queries for entire range, uses `WHERE IN` for precise date filtering). Replaces old table-level `global_coverage` which incorrectly marked tables as available when only 2/1498 days had data
-- **NaN handling**: `_safe_float_nullable()` preserves NULL for `fd_amount`, `turnover_ratio`, `float_mv`, `total_mv` in limit_list_d (DB stores NULL, repo layer `or 0.0` fallback). Other fields use `_safe_float()` (NaN→0.0)
+- **NaN handling**: `_safe_float_nullable()` preserves NULL for `fd_amount`, `turnover_ratio`, `float_mv`, `total_mv` in limit_list_d (DB stores NULL, `LimitRecord` model holds `float | None`, callers handle None explicitly with neutral-score fallback). `_safe_int_warn()` logs warning when NaN coerced to 0 (used for `open_times`). Other fields use `_safe_float()` (NaN→0.0)
+- **OHLC validation**: `daily_bar_fetcher` and `index_fetcher` skip records with `close<=0`; `daily_bar_fetcher` logs warning for `high<low` (record still inserted per design)
+- **Partial sync rollback**: `_rollback_partial_shards()` deletes all shards of multi-shard tables (limit_list_d U/D/Z, kpl_list 涨停/炸板/跌停) when some but not all shards fail, preventing incorrect up_down_ratio from partial data
+- **Concept/ths_member cache expiry**: On-demand sync checks `created_at > datetime('now', '-30 days')` — stale entries are re-fetched
 - **Sync retry**: `sync_date_range_bulk()` auto-retries failed batch chunks up to 2 rounds with exponential backoff. `stk_factor_pro` per-stock failures are logged (not silent)
 
 ## Conventions
@@ -264,7 +268,7 @@ Context features (6): cycle_phase (ordinal 0-5),
 - Date format: `date` objects internally, `YYYYMMDD` strings for Tushare API
 - Frozen dataclasses for all model outputs
 - `out_date` fields: always store as NULL (not empty string) to represent "未退出"
-- `_safe_float` / `_safe_float_nullable` / `_safe_int` in `limit_fetcher.py` are shared across all 14+ fetchers — add new variants, never change existing signatures
+- `_safe_float` / `_safe_float_nullable` / `_safe_int` / `_safe_int_warn` in `limit_fetcher.py` are shared across all 14+ fetchers — add new variants, never change existing signatures
 - Optional dependencies: `[ml]` (scikit-learn), `[llm]` (openai), `[dev]` (pytest, ruff)
 - Linter/formatter: `ruff` (line-length=100, target py311)
 - **所有对话和交流必须使用中文**（包括解释、分析、建议、提问等，commit message 可中英混合）

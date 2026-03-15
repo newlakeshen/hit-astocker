@@ -333,7 +333,7 @@ TABLES = {
             ts_code TEXT NOT NULL,
             name TEXT,
             in_date TEXT DEFAULT '',
-            out_date TEXT DEFAULT '',
+            out_date TEXT DEFAULT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (id, ts_code)
         )
@@ -345,7 +345,7 @@ TABLES = {
             name TEXT,
             weight REAL DEFAULT 0,
             in_date TEXT DEFAULT '',
-            out_date TEXT DEFAULT '',
+            out_date TEXT DEFAULT NULL,
             is_new TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (ts_code, code)

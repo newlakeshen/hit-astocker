@@ -19,10 +19,10 @@ class LimitRecord:
     pct_chg: float
     amount: float  # 成交额 (万元)
     limit_amount: float  # 封单金额
-    float_mv: float  # 流通市值
-    total_mv: float  # 总市值
-    turnover_ratio: float  # 换手率
-    fd_amount: float  # 封单手数
+    float_mv: float | None  # 流通市值 (None = 数据缺失)
+    total_mv: float | None  # 总市值 (None = 数据缺失)
+    turnover_ratio: float | None  # 换手率 (None = 数据缺失)
+    fd_amount: float | None  # 封单手数 (None = 数据缺失)
     first_time: str  # 首次封板时间 HH:MM:SS
     last_time: str  # 最后封板时间
     open_times: int  # 打开次数

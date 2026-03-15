@@ -50,6 +50,10 @@ CONTEXT_COLUMNS: tuple[str, ...] = (
 
 ALL_COLUMNS: tuple[str, ...] = FACTOR_COLUMNS + CONTEXT_COLUMNS
 
+# Default fill value for missing factor scores: 50.0 = neutral midpoint.
+# Using a constant dict allows future override with training-set medians.
+FACTOR_DEFAULTS: dict[str, float] = {col: 50.0 for col in FACTOR_COLUMNS}
+
 # Ordinal encoding for cycle phase (higher = more dangerous)
 _PHASE_ORD: dict[CyclePhase, float] = {
     CyclePhase.ICE: 0.0,
@@ -82,10 +86,10 @@ def build_feature_vector(
     """
     vec: list[float] = []
 
-    # Factor features: use 50.0 (neutral) for missing type-specific factors.
+    # Factor features: use neutral defaults for missing type-specific factors.
     # 0.0 conflates "missing" with "extremely poor", biasing logistic models.
     for col in FACTOR_COLUMNS:
-        vec.append(factors.get(col, 50.0))
+        vec.append(factors.get(col, FACTOR_DEFAULTS[col]))
 
     # Context features
     vec.append(_PHASE_ORD.get(cycle.phase, 2.0) if cycle else 2.0)

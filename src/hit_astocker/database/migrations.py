@@ -4,7 +4,7 @@ import sqlite3
 
 from hit_astocker.database.schema import init_schema
 
-CURRENT_VERSION = 9
+CURRENT_VERSION = 10
 
 # v6: ths_hot 补齐 data_type / current_price / rank_reason / rank_time
 _V6_ALTER_THS_HOT = [
@@ -38,6 +38,11 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
                 except sqlite3.OperationalError:
                     pass  # column already exists (fresh DB)
 
+        # v10: unify out_date empty string → NULL
+        if current < 10:
+            conn.execute("UPDATE concept_detail SET out_date = NULL WHERE out_date = ''")
+            conn.execute("UPDATE ths_member SET out_date = NULL WHERE out_date = ''")
+
         conn.execute(
             "INSERT INTO _schema_version (version) VALUES (?)",
             (CURRENT_VERSION,),
@@ -46,4 +51,5 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
     # Always initialise the trade calendar singleton from DB
     from hit_astocker.utils.trade_calendar import init_trade_calendar
+
     init_trade_calendar(conn)

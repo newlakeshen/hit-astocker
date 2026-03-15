@@ -64,13 +64,12 @@ class LimitListRepository(BaseRepository):
         return records
 
     def find_records_by_type(
-        self, trade_date: date, limit_type: LimitDirection,
+        self,
+        trade_date: date,
+        limit_type: LimitDirection,
     ) -> list[LimitRecord]:
         if trade_date in self._records_cache or self._in_preloaded_range(trade_date):
-            return [
-                r for r in self.find_records_by_date(trade_date)
-                if r.limit == limit_type
-            ]
+            return [r for r in self.find_records_by_date(trade_date) if r.limit == limit_type]
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         sql = 'SELECT * FROM limit_list_d WHERE trade_date = ? AND "limit" = ?'
         rows = self._conn.execute(sql, (date_str, limit_type.value)).fetchall()
@@ -104,7 +103,8 @@ class LimitListRepository(BaseRepository):
         if trade_date in self._records_cache or self._in_preloaded_range(trade_date):
             return sorted(
                 [
-                    r for r in self.find_records_by_date(trade_date)
+                    r
+                    for r in self.find_records_by_date(trade_date)
                     if r.limit == LimitDirection.UP and r.limit_times == 1
                 ],
                 key=lambda r: r.first_time,
@@ -122,7 +122,8 @@ class LimitListRepository(BaseRepository):
         """Count 一字板 (opened at limit-up, never broke)."""
         if trade_date in self._records_cache or self._in_preloaded_range(trade_date):
             return sum(
-                1 for r in self.find_records_by_date(trade_date)
+                1
+                for r in self.find_records_by_date(trade_date)
                 if r.limit == LimitDirection.UP and r.open_times == 0
             )
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
@@ -142,13 +143,8 @@ class LimitListRepository(BaseRepository):
         """
         if trade_date in self._records_cache or self._in_preloaded_range(trade_date):
             records = self.find_records_by_date(trade_date)
-            recovery = sum(
-                1 for r in records
-                if r.limit == LimitDirection.UP and r.open_times > 0
-            )
-            broken = sum(
-                1 for r in records if r.limit == LimitDirection.BROKEN
-            )
+            recovery = sum(1 for r in records if r.limit == LimitDirection.UP and r.open_times > 0)
+            broken = sum(1 for r in records if r.limit == LimitDirection.BROKEN)
             return (recovery, broken)
         date_str = trade_date.strftime(TUSHARE_DATE_FMT)
         sql = """
@@ -222,10 +218,10 @@ class LimitListRepository(BaseRepository):
             pct_chg=row["pct_chg"] or 0.0,
             amount=row["amount"] or 0.0,
             limit_amount=row["limit_amount"] or 0.0,
-            float_mv=row["float_mv"] or 0.0,
-            total_mv=row["total_mv"] or 0.0,
-            turnover_ratio=row["turnover_ratio"] or 0.0,
-            fd_amount=row["fd_amount"] or 0.0,
+            float_mv=row["float_mv"],  # None if NULL (data missing)
+            total_mv=row["total_mv"],
+            turnover_ratio=row["turnover_ratio"],
+            fd_amount=row["fd_amount"],
             first_time=row["first_time"] or "",
             last_time=row["last_time"] or "",
             open_times=row["open_times"] or 0,

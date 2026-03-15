@@ -18,48 +18,65 @@ def sentiment_table(sentiment) -> Table:
     s = sentiment
     # Row 1: 涨停 / 跌停
     table.add_row(
-        "涨停家数", f"[bold red]{s.limit_up_count}[/]",
-        "跌停家数", f"[bold green]{s.limit_down_count}[/]",
+        "涨停家数",
+        f"[bold red]{s.limit_up_count}[/]",
+        "跌停家数",
+        f"[bold green]{s.limit_down_count}[/]",
     )
     # Row 2: 炸板 / 回封
     table.add_row(
-        "炸板家数", f"[yellow]{s.broken_count}[/]",
-        "回封数", f"[bold]{s.recovery_count}[/]",
+        "炸板家数",
+        f"[yellow]{s.broken_count}[/]",
+        "回封数",
+        f"[bold]{s.recovery_count}[/]",
     )
     # Row 3: 涨跌停比 / 炸板修复率
     table.add_row(
-        "涨跌停比", f"{s.up_down_ratio:.2f}",
-        "炸板修复率", f"{s.broken_recovery_rate:.1%}",
+        "涨跌停比",
+        f"{s.up_down_ratio:.2f}",
+        "炸板修复率",
+        f"{s.broken_recovery_rate:.1%}",
     )
     # Row 4: 一字板 / 炸板率
     table.add_row(
-        "一字板", f"{s.yizi_count} ({s.yizi_ratio:.0%})",
-        "炸板率", f"{s.broken_rate:.1%}",
+        "一字板",
+        f"{s.yizi_count} ({s.yizi_ratio:.0%})",
+        "炸板率",
+        f"{s.broken_rate:.1%}",
     )
     # Row 5: 10cm / 20cm 涨停
     table.add_row(
-        "10cm涨停/炸", f"[bold red]{s.limit_up_10cm}[/]/[yellow]{s.broken_10cm}[/]",
-        "20cm涨停/炸", f"[bold red]{s.limit_up_20cm}[/]/[yellow]{s.broken_20cm}[/]",
+        "10cm涨停/炸",
+        f"[bold red]{s.limit_up_10cm}[/]/[yellow]{s.broken_10cm}[/]",
+        "20cm涨停/炸",
+        f"[bold red]{s.limit_up_20cm}[/]/[yellow]{s.broken_20cm}[/]",
     )
     # Row 6: 连板高度 / 晋级率
     table.add_row(
-        "最高连板", f"[bold]{s.max_consecutive_height}[/] 板",
-        "总晋级率", f"{s.promotion_rate:.1%}",
+        "最高连板",
+        f"[bold]{s.max_consecutive_height}[/] 板",
+        "总晋级率",
+        f"{s.promotion_rate:.1%}",
     )
     # Row 7: 2→3 / 3→4 晋级率
     table.add_row(
-        "2→3板晋级", f"{s.promo_rate_2to3:.0%}",
-        "3→4板晋级", f"{s.promo_rate_3to4:.0%}",
+        "2→3板晋级",
+        f"{s.promo_rate_2to3:.0%}",
+        "3→4板晋级",
+        f"{s.promo_rate_3to4:.0%}",
     )
     # Row 8: 次日溢价 / 竞价强弱
     premium_color = pct_color(s.prev_limit_up_premium)
     table.add_row(
-        "昨涨停次日溢价", f"[{premium_color}]{s.prev_limit_up_premium:+.2f}%[/]",
-        "竞价均涨", f"[{pct_color(s.auction_avg_pct)}]{s.auction_avg_pct:+.2f}%[/]",
+        "昨涨停次日溢价",
+        f"[{premium_color}]{s.prev_limit_up_premium:+.2f}%[/]",
+        "竞价均涨",
+        f"[{pct_color(s.auction_avg_pct)}]{s.auction_avg_pct:+.2f}%[/]",
     )
     # Row 9: 竞价高开比 / 赚钱效应
     table.add_row(
-        "竞价高开比", f"{s.auction_up_ratio:.0%}",
+        "竞价高开比",
+        f"{s.auction_up_ratio:.0%}",
         "赚钱效应",
         f"[{score_color(s.money_effect_score)}]{s.money_effect_score:.1f}[/]",
     )
@@ -89,7 +106,7 @@ def firstboard_table(results) -> Table:
     table.add_column("综合评分", justify="right", width=8)
 
     for i, r in enumerate(results[:20], 1):
-        seal_ratio = r.limit_amount / r.float_mv * 100 if r.float_mv > 0 else 0
+        seal_ratio = r.limit_amount / r.float_mv * 100 if r.float_mv and r.float_mv > 0 else 0
         table.add_row(
             str(i),
             r.ts_code,
@@ -98,7 +115,7 @@ def firstboard_table(results) -> Table:
             r.first_time[:5] if r.first_time else "-",
             str(r.open_times),
             f"{seal_ratio:.1f}%",
-            f"{r.turnover_ratio:.1f}%",
+            f"{r.turnover_ratio:.1f}%" if r.turnover_ratio is not None else "-",
             f"[{score_color(r.composite_score)}]{r.composite_score:.1f}[/]",
         )
     return table
