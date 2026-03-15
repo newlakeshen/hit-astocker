@@ -39,11 +39,11 @@ FACTOR_COLUMNS: tuple[str, ...] = (
 
 # ── Context features ──
 CONTEXT_COLUMNS: tuple[str, ...] = (
-    "cycle_phase",            # ordinal 0-5
-    "sig_first_board",        # one-hot
+    "cycle_phase",  # ordinal 0-5
+    "sig_first_board",  # one-hot
     "sig_follow_board",
     "sig_sector_leader",
-    "has_northbound_data",    # data availability
+    "has_northbound_data",  # data availability
     "has_technical_data",
     "has_auction_data",
 )
@@ -82,9 +82,10 @@ def build_feature_vector(
     """
     vec: list[float] = []
 
-    # Factor features: use 0.0 for missing (type-specific factors not in this type)
+    # Factor features: use 50.0 (neutral) for missing type-specific factors.
+    # 0.0 conflates "missing" with "extremely poor", biasing logistic models.
     for col in FACTOR_COLUMNS:
-        vec.append(factors.get(col, 0.0))
+        vec.append(factors.get(col, 50.0))
 
     # Context features
     vec.append(_PHASE_ORD.get(cycle.phase, 2.0) if cycle else 2.0)
@@ -104,7 +105,4 @@ def build_feature_matrix(
     coverage: DataCoverage | None = None,
 ) -> list[list[float]]:
     """Build feature matrix for a batch of candidates."""
-    return [
-        build_feature_vector(c.factors, c.signal_type, cycle, coverage)
-        for c in candidates
-    ]
+    return [build_feature_vector(c.factors, c.signal_type, cycle, coverage) for c in candidates]

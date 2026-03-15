@@ -126,17 +126,11 @@ class Stage1Filter:
         if c.signal_type == "FOLLOW_BOARD":
             surv = c.factors.get("survival", 0)
             hm = c.factors.get("height_momentum", 0)
-            # 基础门槛: survival < 30 直接过滤
-            if surv < 30:
-                return f"晋级率极低 (survival={surv:.0f})"
-            # 高位板递增门槛 (与 fallback 值对齐, 避免自相矛盾)
             height = _infer_height(hm)
-            if height >= 5 and surv < 35:
-                return f"{height}板晋级率不足 (survival={surv:.0f}<35)"
-            if height >= 4 and surv < 30:
-                return f"{height}板晋级率不足 (survival={surv:.0f}<30)"
-            if height >= 3 and surv < 25:
-                return f"{height}板晋级率不足 (survival={surv:.0f}<25)"
+            # 高位板递增门槛 (先特殊后通用, 避免通用门槛短路高位板检查)
+            min_surv = _min_survival_by_height(height)
+            if surv < min_surv:
+                return f"{height}板晋级率不足 (survival={surv:.0f}<{min_surv})"
             # 高度动量过低 = 真正衰竭才过滤
             if hm < 10:
                 return f"连板动量衰竭 (height_momentum={hm:.0f})"
@@ -207,6 +201,24 @@ def _profit_effect_gate(
         return f"赚钱效应偏弱 (regime={pe.regime_score:.0f})"
 
     return None
+
+
+def _min_survival_by_height(height: int) -> int:
+    """高度 → 最低生存率门槛 (先特殊后通用).
+
+    连板越高, 所需晋级率越高:
+      2板: 30 (基础门槛)
+      3板: 25 (3板本身晋级率低, 适度放宽)
+      4板: 30
+      5板+: 35
+    """
+    if height >= 5:
+        return 35
+    if height >= 4:
+        return 30
+    if height >= 3:
+        return 25
+    return 30
 
 
 def _infer_height(height_momentum: float) -> int:

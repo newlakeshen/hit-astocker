@@ -264,12 +264,18 @@ class BacktestEngine:
                 actual_exit_date = exit_date_t3
 
         # ── Apply slippage to exit ──
-        eff_exit = raw_exit * (1 - slip)
+        # 一字跌停 (YIZI_HELD) 时无法卖出, 不扣出场滑点和卖出成本
+        is_yizi_held = exit_reason == ExitReason.YIZI_HELD.value
+        eff_exit = raw_exit if is_yizi_held else raw_exit * (1 - slip)
 
         # ── Compute costs ──
         buy_comm = eff_entry * config.commission_rate
-        sell_comm = eff_exit * config.commission_rate
-        stamp = eff_exit * config.stamp_duty_rate
+        if is_yizi_held:
+            sell_comm = 0.0
+            stamp = 0.0
+        else:
+            sell_comm = eff_exit * config.commission_rate
+            stamp = eff_exit * config.stamp_duty_rate
         total_cost = buy_comm + sell_comm + stamp
         cost_pct = total_cost / eff_entry * 100 if eff_entry > 0 else 0.0
 

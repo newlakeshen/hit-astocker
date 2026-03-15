@@ -74,7 +74,7 @@ class CompositeScorer:
 
         # ── shared lookup maps ──────────────────────────────────────────
         moneyflow_map = {r.ts_code: r for r in moneyflow_results}
-        sector_names = {sec.name for sec in sector.top_sectors[:s.signal_top_sector_count]}
+        sector_names = {sec.name for sec in sector.top_sectors[: s.signal_top_sector_count]}
 
         event_map: dict[str, object] = {}
         if event_result:
@@ -97,6 +97,13 @@ class CompositeScorer:
             cycle=cycle,
         )
 
+        # ── Collect SECTOR_LEADER codes first (for priority override) ──
+        sl_codes: set[str] = set()
+        if event_result:
+            for th in event_result.theme_heats:
+                if th.heat_score >= 65.0 and th.leader_codes:
+                    sl_codes.add(th.leader_codes[0])
+
         # ── 1. FIRST_BOARD (首板弱转强/回封) ─────────────────────────
         scored_codes: set[str] = set()
         candidates: list[ScoredCandidate] = []
@@ -110,18 +117,25 @@ class CompositeScorer:
             weights = _cycle_adjust_weights(_fb_weights(s), cycle, "FIRST_BOARD")
             composite = _weighted_sum(raw, weights)
             clean = {k: v for k, v in raw.items() if v is not None}
-            candidates.append(ScoredCandidate(
-                fb.ts_code, fb.name, round(composite, 2), clean, "FIRST_BOARD",
-                theme=fb.industry,
-            ))
+            candidates.append(
+                ScoredCandidate(
+                    fb.ts_code,
+                    fb.name,
+                    round(composite, 2),
+                    clean,
+                    "FIRST_BOARD",
+                    theme=fb.industry,
+                )
+            )
             scored_codes.add(fb.ts_code)
 
         # ── 2. FOLLOW_BOARD (2-3板接力) ──────────────────────────────
+        # 跳过即将被评为 SECTOR_LEADER 的票 (龙一优先级更高)
         for tier in lianban.tiers:
             if tier.height < 2:
                 continue
             for code, name in zip(tier.stocks, tier.stock_names, strict=False):
-                if code in scored_codes:
+                if code in scored_codes or code in sl_codes:
                     continue
                 raw = _common_factors(code, shared)
                 raw["survival"] = _survival_score(tier.height, survival_model)
@@ -133,10 +147,16 @@ class CompositeScorer:
                 # 题材: 从事件分类获取, fallback 为空
                 ev = shared.event_map.get(code)
                 fl_theme = ev.theme if ev else ""
-                candidates.append(ScoredCandidate(
-                    code, name, round(composite, 2), clean, "FOLLOW_BOARD",
-                    theme=fl_theme,
-                ))
+                candidates.append(
+                    ScoredCandidate(
+                        code,
+                        name,
+                        round(composite, 2),
+                        clean,
+                        "FOLLOW_BOARD",
+                        theme=fl_theme,
+                    )
+                )
                 scored_codes.add(code)
 
         # ── 3. SECTOR_LEADER (空间板龙头) ────────────────────────────
@@ -156,16 +176,22 @@ class CompositeScorer:
                 raw["theme_heat"] = th.heat_score
                 raw["leader_position"] = 100.0  # 龙一固定满分
                 raw["sector"] = 100.0
-                ec = raw.get("event_catalyst") or 50.0
-                raw["event_catalyst"] = max(ec, th.heat_score)
+                # event_catalyst 独立于 theme_heat, 不再用 max 覆盖
+                # 避免双重计分 (theme_heat + event_catalyst 各有独立权重)
 
                 weights = _cycle_adjust_weights(_sl_weights(s), cycle, "SECTOR_LEADER")
                 composite = _weighted_sum(raw, weights)
                 clean = {k: v for k, v in raw.items() if v is not None}
-                candidates.append(ScoredCandidate(
-                    code, name, round(composite, 2), clean, "SECTOR_LEADER",
-                    theme=th.theme_name,
-                ))
+                candidates.append(
+                    ScoredCandidate(
+                        code,
+                        name,
+                        round(composite, 2),
+                        clean,
+                        "SECTOR_LEADER",
+                        theme=th.theme_name,
+                    )
+                )
                 scored_codes.add(code)
 
         return sorted(candidates, key=lambda c: c.score, reverse=True)
@@ -176,10 +202,18 @@ class CompositeScorer:
 
 class _SharedMaps:
     """Lightweight holder to reduce parameter passing."""
+
     __slots__ = (
-        "sentiment", "sector_names", "moneyflow_map", "dragon",
-        "event_map", "sentiment_map", "northbound_map", "survival_model",
-        "coverage", "cycle",
+        "sentiment",
+        "sector_names",
+        "moneyflow_map",
+        "dragon",
+        "event_map",
+        "sentiment_map",
+        "northbound_map",
+        "survival_model",
+        "coverage",
+        "cycle",
     )
 
     def __init__(
@@ -379,9 +413,9 @@ def _data_driven_height_momentum(height: int, model: SurvivalModel) -> float:
     # 5板+进入纯博弈区, 额外惩罚
     position_adj = 0.0
     if height == 2:
-        position_adj = 10.0   # 最佳接力位加成
+        position_adj = 10.0  # 最佳接力位加成
     elif height == 3:
-        position_adj = 3.0    # 趋势确认, 微加
+        position_adj = 3.0  # 趋势确认, 微加
     elif height >= 5:
         position_adj = -5.0 * (height - 4)  # 每超1板扣5分
 

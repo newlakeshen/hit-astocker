@@ -60,15 +60,24 @@ def train(
     start: str = typer.Option(..., "--start", "-s", help="Training start date (YYYYMMDD)"),
     end: str = typer.Option(..., "--end", "-e", help="Training end date (YYYYMMDD)"),
     model_type: str = typer.Option(
-        "logistic", "--model", "-m",
+        "logistic",
+        "--model",
+        "-m",
         help="Model type: logistic (可解释) / gbdt (非线性)",
     ),
     min_samples: int = typer.Option(200, "--min-samples", help="Minimum training samples"),
 ):
     """Train ML ranking model from historical backtest data."""
     settings = get_settings()
-    start_date = from_tushare_date(start)
-    end_date = from_tushare_date(end)
+    try:
+        start_date = from_tushare_date(start)
+        end_date = from_tushare_date(end)
+    except (ValueError, IndexError):
+        console.print("[red]  日期格式错误, 请使用 YYYYMMDD 格式 (例: 20260101)[/]")
+        raise typer.Exit(1) from None
+    if start_date > end_date:
+        console.print("[red]  开始日期不能晚于结束日期[/]")
+        raise typer.Exit(1)
 
     with get_connection(settings.db_path) as conn:
         ensure_schema(conn)
@@ -79,7 +88,10 @@ def train(
 
         # ── 1. Collect training data ──
         features, labels, meta = _collect_training_data(
-            conn, settings, start_date, end_date,
+            conn,
+            settings,
+            start_date,
+            end_date,
         )
 
         if len(features) < min_samples:
@@ -116,7 +128,10 @@ def train(
 
 
 def _collect_training_data(
-    conn, settings, start_date: date, end_date: date,
+    conn,
+    settings,
+    start_date: date,
+    end_date: date,
 ) -> tuple[list[list[float]], list[int], dict]:
     """Collect (features, labels) from historical data.
 
@@ -177,7 +192,9 @@ def _collect_training_data(
     ths_hot_dates = table_has_data_for_date_batch(conn, "ths_hot", trading_days)
     hsgt_dates = table_has_data_for_date_batch(conn, "hsgt_top10", trading_days)
     stk_factor_dates = table_has_data_for_date_batch(
-        conn, "stk_factor_pro", trading_days,
+        conn,
+        "stk_factor_pro",
+        trading_days,
     )
     hm_dates = table_has_data_for_date_batch(conn, "hm_detail", trading_days)
     auction_dates = table_has_data_for_date_batch(conn, "stk_auction", trading_days)
@@ -192,6 +209,7 @@ def _collect_training_data(
         )
 
     from hit_astocker.repositories.hm_repo import HmRepository
+
     hm_repo = HmRepository(conn)
 
     context_caches = DailyContextCaches(
@@ -223,9 +241,7 @@ def _collect_training_data(
                 eta_str = f" ETA {eta:.0f}s"
             else:
                 eta_str = ""
-            status.update(
-                f"  收集训练数据... [{i + 1}/{len(trading_days)}] {td}{eta_str}"
-            )
+            status.update(f"  收集训练数据... [{i + 1}/{len(trading_days)}] {td}{eta_str}")
             try:
                 next_td = get_next_trading_day(td)
                 exit_td = get_next_trading_day(next_td) if next_td else None
@@ -263,7 +279,9 @@ def _collect_training_data(
                 signal_features: list[tuple[TradingSignal, list[float]]] = []
                 for candidate in survivors:
                     risk = risk_assessor.assess(
-                        candidate, ctx.sentiment, cycle=ctx.sentiment_cycle,
+                        candidate,
+                        ctx.sentiment,
+                        cycle=ctx.sentiment_cycle,
                     )
                     if risk == RiskLevel.NO_GO:
                         continue
@@ -279,15 +297,17 @@ def _collect_training_data(
                         reason="",
                         score_source="rules",
                     )
-                    signal_features.append((
-                        signal,
-                        build_feature_vector(
-                            candidate.factors,
-                            candidate.signal_type,
-                            ctx.sentiment_cycle,
-                            ctx.coverage,
-                        ),
-                    ))
+                    signal_features.append(
+                        (
+                            signal,
+                            build_feature_vector(
+                                candidate.factors,
+                                candidate.signal_type,
+                                ctx.sentiment_cycle,
+                                ctx.coverage,
+                            ),
+                        )
+                    )
 
                 if not signal_features:
                     meta["days_skipped"] += 1

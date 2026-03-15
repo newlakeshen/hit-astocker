@@ -23,9 +23,9 @@ from hit_astocker.utils.date_utils import get_recent_trading_days
 class _DayMetrics:
     """Lightweight per-day metrics for cycle detection."""
 
-    score: float          # simplified sentiment score (0-100)
-    broken_rate: float    # 炸板率 (0-1)
-    max_height: int       # 最高连板高度
+    score: float  # simplified sentiment score (0-100)
+    broken_rate: float  # 炸板率 (0-1)
+    max_height: int  # 最高连板高度
 
 
 class SentimentCycleDetector:
@@ -36,8 +36,11 @@ class SentimentCycleDetector:
         self._step_repo = step_repo or LimitStepRepository(conn)
 
     def detect(
-        self, trade_date: date, current: SentimentScore,
-        *, light_metrics_cache: dict[date, _DayMetrics] | None = None,
+        self,
+        trade_date: date,
+        current: SentimentScore,
+        *,
+        light_metrics_cache: dict[date, _DayMetrics] | None = None,
     ) -> SentimentCycle:
         """Detect cycle phase using today's full score + recent lightweight metrics.
 
@@ -61,23 +64,33 @@ class SentimentCycleDetector:
                     light_metrics_cache[d] = metrics
                 history.append(metrics)
 
-        # Build score / broken_rate series (newest first)
+        # Build score / broken_rate series (newest first).
+        # Use light_metrics (3-factor) for all days including today, so
+        # delta/MA compare same-dimension scores. Mixing overall_score
+        # (9-factor) for today with light_score for history introduces
+        # systematic bias of 10-20pts when auction/northbound data exists.
+        today_light = self._compute_light_metrics(trade_date)
+        if light_metrics_cache is not None:
+            light_metrics_cache[trade_date] = today_light
+        light_scores = [today_light.score] + [m.score for m in history]
+        broken_rates = [today_light.broken_rate] + [m.broken_rate for m in history]
+        # overall_score is still used for absolute-level phase determination
+        # (thresholds calibrated against 9-factor range)
         scores = [current.overall_score] + [m.score for m in history]
-        broken_rates = [current.broken_rate] + [m.broken_rate for m in history]
 
-        n = len(scores)
+        n = len(light_scores)
 
-        # ── Moving averages ──
-        ma3 = sum(scores[:min(3, n)]) / min(3, n)
-        ma5 = sum(scores[:min(5, n)]) / min(5, n)
+        # ── Moving averages (use light_scores for consistent dimension) ──
+        ma3 = sum(light_scores[: min(3, n)]) / min(3, n)
+        ma5 = sum(light_scores[: min(5, n)]) / min(5, n)
 
-        # ── First & second derivative ──
-        delta = scores[0] - scores[1] if n >= 2 else 0.0
-        prev_delta = scores[1] - scores[2] if n >= 3 else 0.0
+        # ── First & second derivative (light_scores for consistent delta) ──
+        delta = light_scores[0] - light_scores[1] if n >= 2 else 0.0
+        prev_delta = light_scores[1] - light_scores[2] if n >= 3 else 0.0
         accel = delta - prev_delta
 
         # ── Broken-rate trend (3-day linear slope, positive = worsening) ──
-        broken_rate_trend = _simple_slope(broken_rates[:min(3, n)])
+        broken_rate_trend = _simple_slope(broken_rates[: min(3, n)])
 
         # ── Phase determination ──
         phase = self._determine_phase(
@@ -90,17 +103,23 @@ class SentimentCycleDetector:
         )
 
         # ── Turning point detection ──
-        prev_phase = self._determine_phase(
-            current=scores[1] if n >= 2 else scores[0],
-            delta=prev_delta,
-            accel=0.0,
-            ma3=sum(scores[1:min(4, n)]) / min(3, max(1, n - 1)) if n >= 2 else scores[0],
-            broken_rate=broken_rates[1] if n >= 2 else broken_rates[0],
-            broken_rate_trend=0.0,
-        ) if n >= 2 else phase
+        prev_phase = (
+            self._determine_phase(
+                current=scores[1] if n >= 2 else scores[0],
+                delta=prev_delta,
+                accel=0.0,
+                ma3=sum(scores[1 : min(4, n)]) / min(3, max(1, n - 1)) if n >= 2 else scores[0],
+                broken_rate=broken_rates[1] if n >= 2 else broken_rates[0],
+                broken_rate_trend=0.0,
+            )
+            if n >= 2
+            else phase
+        )
 
         is_turning = phase != prev_phase and phase in (
-            CyclePhase.REPAIR, CyclePhase.RETREAT, CyclePhase.DIVERGE,
+            CyclePhase.REPAIR,
+            CyclePhase.RETREAT,
+            CyclePhase.DIVERGE,
         )
 
         desc = self._build_description(phase, delta, broken_rate_trend)

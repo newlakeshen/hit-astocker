@@ -59,8 +59,8 @@ def test_seal_quality_25_passes():
 
 
 def test_survival_baseline_30():
-    """FOLLOW_BOARD with survival=25 filtered (<30 baseline)."""
-    c = _make_candidate(signal_type="FOLLOW_BOARD", survival=25.0)
+    """FOLLOW_BOARD with survival=24 filtered (<25 for height=3, default hm=60)."""
+    c = _make_candidate(signal_type="FOLLOW_BOARD", survival=24.0)
     ctx = _make_ctx()
     reason = Stage1Filter._should_filter(c, ctx)
     assert reason is not None

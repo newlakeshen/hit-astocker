@@ -177,8 +177,9 @@ def _cycle_gate(candidate: ScoredCandidate, cycle: SentimentCycle | None) -> Ris
         f = candidate.factors
         if sig_type == "FIRST_BOARD":
             sq = f.get("seal_quality", 0)
-            th = f.get("theme_heat", 0)
-            if score >= 65 and (sq >= 60 or th >= 60):
+            # FIRST_BOARD 无 theme_heat, 用 event_catalyst 作为题材强度代理
+            ec = f.get("event_catalyst", 0)
+            if score >= 65 and (sq >= 60 or ec >= 60):
                 return RiskLevel.HIGH
             return RiskLevel.NO_GO
         if sig_type == "FOLLOW_BOARD":
@@ -199,7 +200,9 @@ def _cycle_gate(candidate: ScoredCandidate, cycle: SentimentCycle | None) -> Ris
     if phase == CyclePhase.CLIMAX:
         # 高潮末期检测: 一阶导+二阶导协同判断
         # 条件: delta < -1 (情绪已开始下滑) OR accel < -3 (加速恶化)
-        is_late_climax = cycle.score_delta < -1 or cycle.score_accel < -3
+        is_late_climax = cycle.score_delta < -1 or (
+            cycle.score_delta < 0 and cycle.score_accel < -3
+        )
         if is_late_climax:
             # 高潮末期: 仅 SECTOR_LEADER 75+ 可参与
             if sig_type == "SECTOR_LEADER" and score >= 75:

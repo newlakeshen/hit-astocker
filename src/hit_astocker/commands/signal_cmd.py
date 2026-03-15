@@ -24,7 +24,11 @@ def signal(
     date_str: str = typer.Option(None, "--date", "-d", help="Trading date (YYYYMMDD)"),
     max_risk: str = typer.Option("HIGH", "--risk", "-r", help="Max risk level: LOW/MEDIUM/HIGH"),
     top_k: int = typer.Option(0, "--top-k", "-k", help="Override daily TopK (0=use settings)"),
-    no_limit: bool = typer.Option(False, "--no-limit", help="Disable portfolio constraints (输出全量信号)"),
+    no_limit: bool = typer.Option(
+        False,
+        "--no-limit",
+        help="Disable portfolio constraints (输出全量信号)",
+    ),
 ):
     """Generate and display trading signals."""
     settings = get_settings()
@@ -34,12 +38,14 @@ def signal(
     if top_k > 0:
         settings = settings.model_copy(update={"signal_top_k": top_k})
     if no_limit:
-        settings = settings.model_copy(update={
-            "signal_min_score": 0.0,
-            "signal_top_k": 999,
-            "signal_max_per_theme": 999,
-            "signal_max_per_type": 999,
-        })
+        settings = settings.model_copy(
+            update={
+                "signal_min_score": 0.0,
+                "signal_top_k": 999,
+                "signal_max_per_theme": 999,
+                "signal_max_per_type": 999,
+            }
+        )
 
     with get_connection(settings.db_path) as conn:
         ensure_schema(conn)
@@ -71,16 +77,19 @@ def signal(
 
         # Filter by risk
         risk_order = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "EXTREME": 3, "NO_GO": 4}
-        max_risk_val = risk_order.get(max_risk.upper(), 2)
-        filtered = [
-            s for s in signals
-            if risk_order.get(s.risk_level.value, 4) <= max_risk_val
-        ]
+        risk_key = max_risk.upper()
+        if risk_key not in risk_order:
+            console.print(f"[red]  无效风险级别: {max_risk}[/]\n  可选: {', '.join(risk_order)}")
+            raise typer.Exit(1)
+        max_risk_val = risk_order[risk_key]
+        filtered = [s for s in signals if risk_order.get(s.risk_level.value, 4) <= max_risk_val]
 
         # Portfolio constraints summary
         if not no_limit:
             min_score = _dynamic_min_score(
-                settings.signal_min_score, ctx.sentiment, ctx.sentiment_cycle,
+                settings.signal_min_score,
+                ctx.sentiment,
+                ctx.sentiment_cycle,
             )
             console.print(
                 f"  [dim]筛选: 评分≥{min_score:.0f} | "

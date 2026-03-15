@@ -2,9 +2,9 @@
 
 
 def is_st_stock(name: str) -> bool:
-    """Check if stock is ST (Special Treatment)."""
+    """Check if stock is ST (Special Treatment) or delisting risk (退市警示)."""
     upper = name.upper()
-    return "ST" in upper or "*ST" in upper
+    return "ST" in upper or "退" in name
 
 
 def is_bj_stock(ts_code: str) -> bool:

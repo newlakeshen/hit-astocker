@@ -4,12 +4,12 @@ from hit_astocker.models.backtest import BacktestConfig
 
 
 def test_effective_stops_with_regime_strong_bull():
-    """STRONG_BULL: tighter stop (+1%), wider take (+2%)."""
+    """STRONG_BULL: wider stop (-0.5%), wider take (+2%)."""
     config = BacktestConfig(stop_loss_pct=-5.0, take_profit_pct=5.0)
     stop, target = config.effective_stops_with_regime("FIRST_BOARD", "STRONG_BULL")
-    # FIRST_BOARD: dynamic stop = -5, then STRONG_BULL +1 = -4
+    # FIRST_BOARD: dynamic stop = -5, then STRONG_BULL -0.5 = -5.5
     # take = max(5.0, 8.0) = 8.0, then STRONG_BULL +2 = 10.0
-    assert stop == -4.0
+    assert stop == -5.5
     assert target == 10.0
 
 

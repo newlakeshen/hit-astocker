@@ -118,9 +118,9 @@ class BacktestConfig:
         if market_regime is None or market_regime in ("BULL", "NEUTRAL"):
             return base_stop, base_target
 
-        # Regime adjustments (positive = tighter stop / wider take)
+        # Regime adjustments: negative stop_adj = wider stop, positive = tighter
         regime_adj = {
-            "STRONG_BULL": (1.0, 2.0),  # tighter stop, wider take
+            "STRONG_BULL": (-0.5, 2.0),  # wider stop, wider take (牛市给更多空间)
             "BEAR": (1.5, -1.0),  # tighter stop, tighter take
             "STRONG_BEAR": (2.0, -2.0),  # most aggressive
         }

@@ -59,21 +59,17 @@ class RankingModel:
             from sklearn.preprocessing import StandardScaler
         except ImportError:
             raise ImportError(
-                "ML ranking requires scikit-learn. Install via: "
-                "pip install 'hit-astocker[ml]'"
+                "ML ranking requires scikit-learn. Install via: pip install 'hit-astocker[ml]'"
             ) from None
 
         x_arr = np.array(features, dtype=np.float64)
         y_arr = np.array(labels, dtype=np.int32)
 
-        # Scale features
-        self._scaler = StandardScaler()
-        x_scaled = self._scaler.fit_transform(x_arr)
-
         # Build model
         if self._model_type == "gbdt":
             from sklearn.ensemble import GradientBoostingClassifier
-            self._model = GradientBoostingClassifier(
+
+            estimator = GradientBoostingClassifier(
                 n_estimators=200,
                 max_depth=4,
                 learning_rate=0.05,
@@ -83,25 +79,45 @@ class RankingModel:
             )
         else:
             from sklearn.linear_model import LogisticRegression
-            self._model = LogisticRegression(
+
+            estimator = LogisticRegression(
                 max_iter=1000,
                 class_weight="balanced",
                 C=0.1,
                 random_state=42,
             )
 
-        # Cross-validation
+        # Cross-validation with Pipeline to prevent scaler data leakage.
+        # StandardScaler must be fit independently per fold — fitting on all
+        # data before CV leaks validation fold statistics into training.
+        from sklearn.pipeline import Pipeline
+
+        pipeline = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                ("model", estimator),
+            ]
+        )
         n_splits = min(5, max(2, len(y_arr) // 50))
         auc_scores = cross_val_score(
-            self._model, x_scaled, y_arr,
-            cv=n_splits, scoring="roc_auc",
+            pipeline,
+            x_arr,
+            y_arr,
+            cv=n_splits,
+            scoring="roc_auc",
         )
         acc_scores = cross_val_score(
-            self._model, x_scaled, y_arr,
-            cv=n_splits, scoring="accuracy",
+            pipeline,
+            x_arr,
+            y_arr,
+            cv=n_splits,
+            scoring="accuracy",
         )
 
-        # Final fit on all data
+        # Final fit on all data (scaler + model together)
+        self._scaler = StandardScaler()
+        x_scaled = self._scaler.fit_transform(x_arr)
+        self._model = estimator
         self._model.fit(x_scaled, y_arr)
 
         return {
@@ -193,6 +209,16 @@ class RankingModel:
 
         try:
             data = pickle.loads(raw)  # noqa: S301
+            # Verify feature columns match current code
+            saved_cols = data.get("feature_columns")
+            if saved_cols is not None and saved_cols != list(ALL_COLUMNS):
+                logger.error(
+                    "Model feature columns mismatch — retrain required. "
+                    "saved=%d cols, current=%d cols",
+                    len(saved_cols),
+                    len(ALL_COLUMNS),
+                )
+                return False
             self._model = data["model"]
             self._scaler = data["scaler"]
             self._model_type = data.get("model_type", "logistic")
@@ -222,8 +248,7 @@ class RankingModel:
             importances = self._model.feature_importances_
 
         return {
-            col: round(float(imp), 4)
-            for col, imp in zip(ALL_COLUMNS, importances, strict=False)
+            col: round(float(imp), 4) for col, imp in zip(ALL_COLUMNS, importances, strict=False)
         }
 
     def top_features(self, n: int = 10) -> list[tuple[str, float]]:

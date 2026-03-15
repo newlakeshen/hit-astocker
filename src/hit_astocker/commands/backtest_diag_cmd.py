@@ -93,12 +93,8 @@ def _render_bleeding_points(bleeds: list[dict]) -> None:
 
 @diag_app.callback(invoke_without_command=True)
 def diag(
-    start: str = typer.Option(
-        ..., "--start", "-s", help="起始日期 YYYYMMDD"
-    ),
-    end: str = typer.Option(
-        ..., "--end", "-e", help="结束日期 YYYYMMDD"
-    ),
+    start: str = typer.Option(..., "--start", "-s", help="起始日期 YYYYMMDD"),
+    end: str = typer.Option(..., "--end", "-e", help="结束日期 YYYYMMDD"),
     mode: str = typer.Option(
         "AUCTION", "--mode", "-m", help="执行模式: AUCTION/WEAK_TO_STRONG/RE_SEAL"
     ),
@@ -143,8 +139,15 @@ def diag(
         ensure_schema(conn)
 
         # Parse dates
-        start_date = date(int(start[:4]), int(start[4:6]), int(start[6:8]))
-        end_date = date(int(end[:4]), int(end[4:6]), int(end[6:8]))
+        try:
+            start_date = date(int(start[:4]), int(start[4:6]), int(start[6:8]))
+            end_date = date(int(end[:4]), int(end[4:6]), int(end[6:8]))
+        except (ValueError, IndexError):
+            console.print("[red]  日期格式错误, 请使用 YYYYMMDD 格式 (例: 20260101)[/]")
+            raise typer.Exit(1) from None
+        if start_date > end_date:
+            console.print("[red]  开始日期不能晚于结束日期[/]")
+            raise typer.Exit(1)
 
         engine = BacktestEngine(conn)
         generator = SignalGenerator(conn, settings)
@@ -167,7 +170,9 @@ def diag(
         ths_hot_dates = table_has_data_for_date_batch(conn, "ths_hot", trading_days)
         hsgt_dates = table_has_data_for_date_batch(conn, "hsgt_top10", trading_days)
         stk_factor_dates = table_has_data_for_date_batch(
-            conn, "stk_factor_pro", trading_days,
+            conn,
+            "stk_factor_pro",
+            trading_days,
         )
         hm_dates = table_has_data_for_date_batch(conn, "hm_detail", trading_days)
         auction_dates = table_has_data_for_date_batch(conn, "stk_auction", trading_days)
@@ -217,11 +222,13 @@ def diag(
                 if mc:
                     market_regime = mc.market_regime
                 t3 = get_next_trading_day(t2)
-                cycle_phase = (
-                    ctx.sentiment_cycle.phase.value if ctx.sentiment_cycle else None
-                )
+                cycle_phase = ctx.sentiment_cycle.phase.value if ctx.sentiment_cycle else None
                 day_result = engine.simulate_day(
-                    signals, config, d, t1, t2,
+                    signals,
+                    config,
+                    d,
+                    t1,
+                    t2,
                     exit_date_t3=t3,
                     market_regime=market_regime,
                     cycle_phase=cycle_phase,

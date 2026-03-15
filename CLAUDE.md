@@ -86,7 +86,7 @@ Concurrency model:
 - `utils/` - Shared utilities:
   - `trade_calendar.py` - TradeCalendar singleton (bisect O(log n) 交易日查找)
   - `date_utils.py` - Date helper functions (委托给 TradeCalendar)
-  - `stock_filter.py` - ST/BJ/风险警示 stock exclusion
+  - `stock_filter.py` - ST/BJ/退市风险警示 stock exclusion
 - `llm/` - LLM integration (optional, `pip install 'hit-astocker[llm]'`):
   - `client.py` / `cache.py` - OpenAI API client with response caching
   - `event_enhancer.py` / `narrative_gen.py` - AI-powered event narrative generation
@@ -125,13 +125,13 @@ pytest                               # Run tests with coverage (no --timeout fla
 
 ### Stage 1: Hard Filter (`stage1_filter.py`)
 Removes candidates that should never be traded:
-- ST / BJ / 风险警示 (制度性排除)
+- ST / BJ / 退市风险警示 (制度性排除, 含"退"字检测)
 - 大盘暴跌 (上证 ≤ -3% 或 创业板 ≤ -4%)
 - 情绪极度低迷 (overall_score < 25)
 - 退潮期: 龙头/连板 score<70 回避, 首板 score<75 回避
 - 冰点期: score < 50 回避
 - 首板封板质量极差 (seal_quality < 25)
-- 连板生存率极低 (survival < 30, 高位板递增: 3板≥25/4板≥30/5板+≥35)
+- 连板生存率极低 (高度→门槛查表: 2板≥30/3板≥25/4板≥30/5板+≥35)
 - 赚钱效应门控: 按 10cm/20cm 分层查询, 样本不足时 fallback 到总体层
 
 ### Stage 2: Cross-Sectional Ranking
@@ -139,8 +139,10 @@ Removes candidates that should never be traded:
 - 19维特征向量: 13个因子分 + 6个上下文特征 (周期/类型/数据可用性)
 - logistic regression (可解释, 默认) 或 GBDT (捕获非线性交互)
 - 训练数据: 历史因子向量 + T+1收益标签 (盈利=1/亏损=0)
-- 5折交叉验证 + AUC评估
+- 5折交叉验证 + AUC评估 (Pipeline包裹StandardScaler防止数据泄漏)
 - predict_proba → 概率 × 100 = 综合评分 (0-100)
+- 加载时校验 feature_columns 与当前代码一致, 不匹配则拒绝加载
+- 缺失因子用 50.0 (中性值) 而非 0.0, 避免与"极差"混淆
 
 **Rule-based (default path, ML disabled by default via `Settings.use_ml_model`)**:
 - 10-factor weighted scoring (composite_scorer.py)
@@ -163,6 +165,8 @@ Context features (6): cycle_phase (ordinal 0-5),
 ### Composite Score (10 factors, dynamic weights):
 - Base weights: sentiment(12-17%), seal_quality(16-22%), sector(8-12%), event_catalyst(5-12%), stock_sentiment(7-12%), survival(6-22%), capital_flow(5-8%), dragon_tiger(5-10%), northbound(5-7%), technical_form(3-12%)
 - Three models: FIRST_BOARD / FOLLOW_BOARD / SECTOR_LEADER, each with distinct weight profiles
+- **SECTOR_LEADER 优先级**: FOLLOW_BOARD 跳过 sl_codes (龙一), 确保龙一被评为 SECTOR_LEADER 而非 FOLLOW_BOARD
+- **SECTOR_LEADER 独立因子**: theme_heat 和 event_catalyst 各有独立权重, 不再用 max 覆盖 (避免双重计分)
 - **Dynamic weight redistribution**: factors backed by empty tables (not synced) are excluded; their weight is redistributed proportionally to factors with real data
 - `DataCoverage` tracks: has_ths_hot, has_hsgt, has_stk_factor, has_hm
 - Commands display "⚠ 数据缺失" warning when factors are excluded
@@ -174,13 +178,14 @@ Context features (6): cycle_phase (ordinal 0-5),
 
 ### Sentiment Cycle (6-phase):
 - ICE (冰点) → REPAIR (修复) → FERMENT (发酵) → CLIMAX (高潮) → DIVERGE (分歧) → RETREAT (退潮)
-- Computed from 5-day score trajectory: MA3/MA5, delta (一阶导), acceleration (二阶导)
+- Computed from 5-day light_score trajectory (3因子一致量纲): MA3/MA5, delta (一阶导), acceleration (二阶导)
 - Gating in RiskAssessor: RETREAT→NO_GO, ICE→only SECTOR_LEADER 80+, DIVERGE→no FIRST_BOARD
 - Weight adjustment in CompositeScorer: ICE/RETREAT reduce technical_form/capital_flow, boost seal_quality/survival
 
 ### Risk Assessment (Cycle + Regime):
 - Thresholds auto-adjust by market regime (STRONG_BULL → STRONG_BEAR)
-- **Cycle gating**: emotion phase overrides risk (DIVERGE: FIRST_BOARD白名单式放行(sq≥60或th≥60), RETREAT: 龙头/连板65+/首板70+→HIGH, ICE: 60+→HIGH, REPAIR初期: 65+→MEDIUM)
+- **Cycle gating**: emotion phase overrides risk (DIVERGE: FIRST_BOARD白名单式放行(sq≥60或ec≥60), RETREAT: 龙头/连板65+/首板70+→HIGH, ICE: 60+→HIGH, REPAIR初期: 65+→MEDIUM)
+- **CLIMAX末期**: 要求 delta<-1 OR (delta<0 AND accel<-3), 避免上升减速误判
 - Index-based kill conditions (大盘暴跌 → NO_GO)
 - 5 levels: LOW → FULL, MEDIUM → HALF, HIGH → QUARTER, EXTREME/NO_GO → ZERO
 
@@ -203,6 +208,8 @@ Context features (6): cycle_phase (ordinal 0-5),
 - SECTOR_LEADER: 标准止损, 最宽止盈+12% (龙头溢价最高)
 - 默认止盈 8%, 溢价上限 9%
 - 同 K 线止损+止盈均触发时取止盈 (先涨后跌概率更高)
+- 市场 regime 调整: STRONG_BULL(-0.5%止损/+2%止盈), BEAR(+1.5%/-1%), STRONG_BEAR(+2%/-2%)
+- **YIZI_HELD 成本修正**: 一字跌停无法卖出时不扣出场滑点/卖出佣金/印花税 (仅保留买入成本)
 - Disabled via --no-dynamic-stops
 
 ### Per-Type Holding Days:
