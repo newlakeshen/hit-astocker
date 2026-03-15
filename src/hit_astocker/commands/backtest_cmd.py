@@ -129,7 +129,7 @@ def backtest(
         "-m",
         help="执行方式: AUCTION / WEAK_TO_STRONG / RE_SEAL",
     ),
-    stop_loss: float = typer.Option(-7.0, "--stop-loss", help="止损线 (%%, 负数)"),
+    stop_loss: float = typer.Option(-5.0, "--stop-loss", help="止损线 (%%, 负数)"),
     take_profit: float = typer.Option(8.0, "--take-profit", help="止盈线 (%%, 正数)"),
     slippage: float = typer.Option(10.0, "--slippage", help="滑点 (基点, 单边)"),
     max_premium: float = typer.Option(9.0, "--max-premium", help="竞价溢价上限 (%%)"),

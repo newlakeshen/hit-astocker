@@ -50,7 +50,7 @@ class SkipReason(str, Enum):
 @dataclass(frozen=True)
 class BacktestConfig:
     execution_mode: ExecutionMode = ExecutionMode.AUCTION
-    stop_loss_pct: float = -7.0
+    stop_loss_pct: float = -5.0
     take_profit_pct: float = 8.0
     # ── friction ──
     slippage_bps: float = 10.0  # 滑点 (基点), 单边
@@ -74,25 +74,23 @@ class BacktestConfig:
     def effective_stops(self, signal_type: str) -> tuple[float, float]:
         """Return (stop_loss_pct, take_profit_pct) adjusted by signal type.
 
-        打板不同策略的止损逻辑不同:
-          首板弱转强: 止损紧(-5%), 止盈 +7% (弱转强失败快速回落)
-          连板接力:   标准止损, 止盈 +10% (连板有惯性)
-          龙头空间:   标准止损, 止盈 +12% (龙头溢价最高)
+        止损统一 -5% (打板次日 -5% 回撤是常态, 更紧会误杀)。
+        止盈按板型差异化: 首板 +8%, 连板 +10%, 龙头 +12%.
         """
         if not self.dynamic_stops:
             return self.stop_loss_pct, self.take_profit_pct
 
-        if signal_type == "FIRST_BOARD":
-            # 首板: 紧止损, 适中止盈
-            return max(self.stop_loss_pct, -5.0), max(self.take_profit_pct, 7.0)
-        if signal_type == "FOLLOW_BOARD":
-            # 连板: 标准止损, 宽止盈
-            return self.stop_loss_pct, max(self.take_profit_pct, 10.0)
-        if signal_type == "SECTOR_LEADER":
-            # 龙头: 标准止损, 最宽止盈
-            return self.stop_loss_pct, max(self.take_profit_pct, 12.0)
+        # 止损统一 -5%
+        stop = max(self.stop_loss_pct, -5.0)
 
-        return self.stop_loss_pct, self.take_profit_pct
+        if signal_type == "FIRST_BOARD":
+            return stop, max(self.take_profit_pct, 8.0)
+        if signal_type == "FOLLOW_BOARD":
+            return stop, max(self.take_profit_pct, 10.0)
+        if signal_type == "SECTOR_LEADER":
+            return stop, max(self.take_profit_pct, 12.0)
+
+        return stop, self.take_profit_pct
 
     def effective_hold_days(self, signal_type: str, cycle_phase: str | None = None) -> int:
         """按板型和周期返回持仓天数."""
